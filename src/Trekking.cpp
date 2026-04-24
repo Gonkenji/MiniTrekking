@@ -46,9 +46,20 @@ int main() {
     }
     printf("Sensor inicializado com sucesso!\n");
 
+    // 4. Configurações para MODO LONGO ALCANCE (Long Range)
+    
+    // Diminui o limite de taxa de sinal (permite ler retornos de luz mais fracos)
+    sensor.setSignalRateLimit(0.1);
+    
+    // Aumenta o período do pulso do laser para ir mais longe
+    // Atenção: Isso exige que a biblioteca VL53L0X.h suporte esses comandos 
+    // (a maioria das libs baseadas na Pololu suporta).
+    sensor.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
+    sensor.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
+
     // 4. Configurações para estabilidade (Conforme recomendado pelo autor)
     sensor.setTimeout(500);                   // Tempo máximo de espera por leitura
-    sensor.setMeasurementTimingBudget(50000); // 50ms para focar o laser (boa precisão)
+    sensor.setMeasurementTimingBudget(200000);// 50ms para focar o laser (boa precisão)
     sensor.setSignalRateLimit(0.1);           // Melhora o alcance máximo
 
     // 5. Loop contínuo de leitura
