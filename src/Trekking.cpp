@@ -58,28 +58,23 @@ int main() {
     sensor.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
 
     // 4. Configurações para estabilidade (Conforme recomendado pelo autor)
-    sensor.setTimeout(500);                   // Tempo máximo de espera por leitura
-    sensor.setMeasurementTimingBudget(200000);// 50ms para focar o laser (boa precisão)
-    sensor.setSignalRateLimit(0.1);           // Melhora o alcance máximo
+    sensor.setTimeout(50);                   // Tempo máximo de espera por leitura
+    sensor.setMeasurementTimingBudget(33000);
+    sensor.setSignalRateLimit(0.35);           // Melhora o alcance máximo
 
+    uint16_t ultima_distancia_valida = 0;
     // 5. Loop contínuo de leitura
     while (true) {
         uint16_t distancia = sensor.readRangeSingleMillimeters();
         
-        if (sensor.timeoutOccurred()) {
-            printf("Erro: Timeout na leitura!\n");
-        } 
-        else if (distancia > 2000) {
-            printf("Fora de alcance\n");
-        } 
-        else {
-            printf("Distancia: %d mm\n", distancia);
+        if (distancia > 2000) {
+            printf("%d\n", ultima_distancia_valida);
         }
+        else{
+            printf("%d\n", distancia);
+            ultima_distancia_valida = distancia;
+        }  
         
-        // Aguarda 100 milissegundos antes do próximo tiro do laser
-        sleep_ms(100); 
     }
-
     return 0;
 }
-//aaaaaaaaaaaaaaaaaaaaaaaaaaaa
