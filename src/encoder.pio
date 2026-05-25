@@ -1,0 +1,46 @@
+.program encoder
+
+.wrap_target
+inicio:
+    wait 0 pin 0      ; Espera o Canal A (GP16) ir para LOW
+    wait 1 pin 0      ; Espera o Canal A (GP16) ir para HIGH (Borda de subida)
+    
+    jmp pin, inverte  ; Avalia o Canal B (GP17). Se estiver HIGH, pula para 'inverte'
+    
+    ; Se Canal B estiver LOW (Giro sentido 1)
+    jmp x--, inicio   ; Decrementa X e volta ao início imediatamente
+    
+inverte:
+    ; Se Canal B estiver HIGH (Giro sentido 2) -> Precisamos somar 1.
+    ; ~X - 1 e depois invertido novamente equivale a X + 1
+    mov x, ~x
+    jmp x--, reverte
+reverte:
+    mov x, ~x
+    ; O .wrap aqui garante que o código volte ao topo naturalmente
+.wrap
+
+% c-sdk {
+// Função auxiliar em C gerada automaticamente para configurar os pinos
+static inline void encoder_program_init(PIO pio, uint sm, uint offset, uint pin_a, uint pin_b) {
+    pio_sm_config c = encoder_program_get_default_config(offset);
+    
+    // Configura o Canal A como o pino base para a instrução WAIT
+    sm_config_set_in_pins(&c, pin_a);
+    
+    // Configura o Canal B como o pino alvo para a instrução JMP PIN
+    sm_config_set_jmp_pin(&c, pin_b);
+    
+    // Mapeia os pinos fisicamente para o controle da PIO
+    pio_gpio_init(pio, pin_a);
+    pio_gpio_init(pio, pin_b);
+    
+    // Habilita os resistores internos
+    gpio_pull_up(pin_a);
+    gpio_pull_up(pin_b);
+    
+    // Inicia a máquina de estados
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
