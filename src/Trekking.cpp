@@ -13,8 +13,8 @@
 #define TCS_CDATAL      (0x14 | TCS_COMMAND_BIT) // Início dos dados
 
 // Pinos I2C1 do Pico 2 W
-#define I2C_SDA_PIN 26
-#define I2C_SCL_PIN 27
+#define I2C_SDA_PIN 14
+#define I2C_SCL_PIN 15
 
 // Função para escrever nos registradores
 void tcs34725_write_reg(uint8_t reg, uint8_t value) {
