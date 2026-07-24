@@ -38,7 +38,6 @@ pico_sdk_init()
 add_executable(Trekking 
     src/Trekking.cpp
     lib/I2C.cpp
-    lib/VL53L0X.cpp
 )
 
 # Atualizado para dizer que todos os .h estão na pasta lib/
