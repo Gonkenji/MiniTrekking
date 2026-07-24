@@ -44,6 +44,10 @@ add_executable(Trekking
 # Atualizado para dizer que todos os .h estão na pasta lib/
 target_include_directories(Trekking PRIVATE 
     lib
+<<<<<<< Updated upstream
+=======
+    ${CMAKE_CURRENT_LIST_DIR}
+>>>>>>> Stashed changes
 )
 
 pico_set_program_name(Trekking "Trekking")
