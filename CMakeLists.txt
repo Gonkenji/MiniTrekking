@@ -36,18 +36,14 @@ file(GLOB ICM_DRIVER_SOURCES "lib/icm20948/*.c")
 # 2. Adiciona o executável com todos os ficheiros do projeto (Sensores ToF + IMU)
 add_executable(Trekking 
     src/Trekking.cpp
-    src/pico_spi_hal.c
     lib/I2C.cpp
     lib/VL53L0X.cpp
-    ${ICM_DRIVER_SOURCES}
 )
 
 # 3. Define onde o compilador deve procurar os ficheiros de cabeçalho (.h)
 target_include_directories(Trekking PRIVATE 
     src
     lib
-    lib/icm20948
-    ${CMAKE_CURRENT_LIST_DIR}
 )
 
 pico_set_program_name(Trekking "Trekking")
