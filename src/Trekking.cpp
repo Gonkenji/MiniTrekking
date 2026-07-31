@@ -6,7 +6,7 @@
 #include "hardware/timer.h"
 #include "I2C.h"
 #include "VL53L0X.h"
-
+#include "math.h"
 // ==========================================
 // DEFINIÇÕES - SENSORES VL53L0X (ToF) - I2C0
 // ==========================================
@@ -100,6 +100,28 @@ void tcs34725_init_basic() {
     tcs34725_write_reg(TCS_CONTROL, 0x01);
 }
 
+// Variáveis globais para os offsets
+float offset_gx = 0.0f, offset_gy = 0.0f, offset_gz = 0.0f;
+float offset_mx = 12.5f, offset_my = -5.3f, offset_mz = 22.1f; // Valores do seu Hard-Iron
+
+void calibrar_sensores() {
+    int32_t soma_x = 0, soma_y = 0, soma_z = 0;
+    const int amostras = 500;
+    uint8_t buffer[12];
+
+    for (int i = 0; i < amostras; i++) {
+        icm_read_registers(0x2D, buffer, 12);
+        soma_x += (int16_t)((buffer[6] << 8) | buffer[7]);
+        soma_y += (int16_t)((buffer[8] << 8) | buffer[9]);
+        soma_z += (int16_t)((buffer[10] << 8) | buffer[11]);
+        sleep_ms(2);
+    }
+    
+    offset_gx = (float)soma_x / amostras;
+    offset_gy = (float)soma_y / amostras;
+    offset_gz = (float)soma_z / amostras;
+}
+
 // ==========================================
 // PROGRAMA PRINCIPAL
 // ==========================================
@@ -178,6 +200,8 @@ int main() {
     sensor1.startContinuous();
     sensor2.startContinuous();
 
+    calibrar_sensores();
+
     // VARIÁVEIS DE ESTADO DO LOOP
     uint16_t dist_s1 = 1200;
     uint16_t dist_s2 = 1200;
@@ -188,6 +212,8 @@ int main() {
     uint8_t imu_data[12];
     int16_t accel_x = 0, accel_y = 0, accel_z = 0;
     int16_t gyro_x = 0, gyro_y = 0, gyro_z = 0;
+    float yaw = 0.0f;
+    float PI = 3.14159265358979323846;
 
     uint32_t last_color_read = 0;
     uint32_t last_imu_read = 0;
@@ -226,20 +252,49 @@ int main() {
             last_color_read = current_time;
         }
 
-        // --- LEITURA IMU SPI (A cada 10ms para malhas de controle de alta velocidade) ---
-        if (current_time - last_imu_read >= 10) {
-            icm_read_registers(0x2D, imu_data, 12);
-            
-            accel_x = (imu_data[0] << 8) | imu_data[1];
-            accel_y = (imu_data[2] << 8) | imu_data[3];
-            accel_z = (imu_data[4] << 8) | imu_data[5];
-            
-            gyro_x = (imu_data[6] << 8) | imu_data[7];
-            gyro_y = (imu_data[8] << 8) | imu_data[9];
-            gyro_z = (imu_data[10] << 8) | imu_data[11];
-            
-            last_imu_read = current_time;
-        }
+// --- DENTRO DO LOOP PRINCIPAL (A cada 10ms) ---
+if (current_time - last_imu_read >= 10) {
+    float dt = (current_time - last_imu_read) / 1000.0f;
+    
+    // 1. Leitura bruta de 12 bytes (Acelerômetro e Giroscópio apenas)
+    uint8_t buffer_geral[12]; 
+    icm_read_registers(0x2D, buffer_geral, 12);
+    
+    // 2. Extração do Acelerômetro
+    float ax = (float)((int16_t)((buffer_geral[0] << 8) | buffer_geral[1]));
+    float ay = (float)((int16_t)((buffer_geral[2] << 8) | buffer_geral[3]));
+    float az = (float)((int16_t)((buffer_geral[4] << 8) | buffer_geral[5]));
+
+    // 3. Extração, Correção de Offset e Escala do Giroscópio
+    // Subtraímos o offset calculado no setup e dividimos pela escala (131.0f para +/- 250 dps)
+    float raw_gy = (float)((int16_t)((buffer_geral[8] << 8) | buffer_geral[9]));
+    float raw_gz = (float)((int16_t)((buffer_geral[10] << 8) | buffer_geral[11]));
+    
+    float gy = (raw_gy - offset_gy) / 131.0f;
+    float gz = (raw_gz - offset_gz) / 131.0f;
+
+    // 4. CÁLCULO DA INCLINAÇÃO (Acelerômetro em radianos)
+    float roll_rad = atan2(ay, az);
+    float pitch_rad = atan2(-ax, sqrt(ay*ay + az*az));
+
+    // Pré-cálculo trigonométrico para otimizar processamento
+    float sin_r = sin(roll_rad);
+    float cos_r = cos(roll_rad);
+    float cos_p = cos(pitch_rad);
+
+    // 5. CÁLCULO DA TAXA DE YAW REAL (Cinemática de Euler)
+    // Transfere a velocidade angular para o eixo Z verdadeiro do mundo
+    float yaw_rate_world = gz; // Fallback seguro
+    if (fabs(cos_p) > 0.01f) { // Proteção contra divisão por zero
+        yaw_rate_world = gy * (sin_r / cos_p) + gz * (cos_r / cos_p);
+    }
+
+    // 6. INTEGRAÇÃO DIRETA DO YAW
+    yaw = yaw + (yaw_rate_world * dt);
+
+    // Atualiza o tempo para a próxima iteração
+    last_imu_read = current_time;
+}
 
         // --- ATUALIZAÇÃO DO TERMINAL (A cada 100ms para manter a leitura humana possível) ---
         if (current_time - last_terminal_print >= 100) {
@@ -247,8 +302,7 @@ int main() {
             printf("=== DADOS DOS SENSORES ===\n");
             printf("ToF1 : %4d mm  |  ToF2 : %4d mm\n", dist_s1, dist_s2);
             printf("Cor  : C:%5u  R:%5u  G:%5u  B:%5u\n", c, r, g, b);
-            printf("IMU  : AX:%6d  AY:%6d  AZ:%6d\n", accel_x, accel_y, accel_z);
-            printf("       GX:%6d  GY:%6d  GZ:%6d\n", gyro_x, gyro_y, gyro_z);
+            printf("IMU  : yaw:%6.2f  \n", yaw);
             printf("==========================\n");
             
             last_terminal_print = current_time;
