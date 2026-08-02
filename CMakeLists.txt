@@ -38,6 +38,9 @@ add_executable(Trekking
     src/Trekking.cpp
     lib/I2C.cpp
     lib/VL53L0X.cpp
+    lib/sensor_IMU.cpp
+    lib/sensor_TOF0.cpp
+    lib/sensor_cor.cpp
     ${ICM_DRIVER_SOURCES}
 )
 
