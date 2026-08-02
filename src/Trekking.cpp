@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/timer.h" // Necessário para acessar as funções de timer de hardware[cite: 2]
-#include "sensor_TOF0.h"
+#include "sensor_TOF.h"
 #include "sensor_cor.h"
 #include "sensor_imu.h"
 
@@ -42,7 +42,7 @@ int main() {
     add_repeating_timer_ms(-10, imu_timer_callback, NULL, &timer_imu);
 
     // VARIÁVEIS DE ESTADO
-    uint16_t dist_s1 = 1200, dist_s2 = 1200;
+    uint16_t dist_s1 = 1200, dist_s2 = 1200, dist_s3 = 1200;
     uint16_t c = 0, r = 0, g = 0, b = 0;
 
     uint32_t last_color_read = 0;
@@ -58,7 +58,7 @@ int main() {
         uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
         // --- LEITURA ToF (Continua em background pelo hardware do sensor) ---
-        tof_update(dist_s1, dist_s2);
+        tof_update(dist_s1, dist_s2, dist_s3);
 
         if (current_time - last_color_read >= 25) {
     color_update(c, r, g, b);
@@ -84,7 +84,7 @@ int main() {
         if (current_time - last_terminal_print >= 100) {
             printf("\033[H\033[J"); 
             printf("=== DADOS DOS SENSORES ===\n");
-            printf("ToF1 : %4d mm  |  ToF2 : %4d mm\n", dist_s1, dist_s2);
+            printf("ToF1 : %4d mm  |  ToF2 : %4d mm |  ToF3 : %4d mm\n", dist_s1, dist_s2, dist_s3);
             printf("Cor  : C:%5u  R:%5u  G:%5u  B:%5u\n", c, r, g, b);
             
             // Lemos a variável global atualizada pelo timer

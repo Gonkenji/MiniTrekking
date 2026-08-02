@@ -30,17 +30,20 @@ project(Trekking C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-# 1. Procura e agrupa eventuais arquivos .c do driver ICM-20948 (se existirem na pasta)
+# 1. Procura e agrupa eventuais arquivos .c do driver ICM-20948
 file(GLOB ICM_DRIVER_SOURCES "lib/icm20948/*.c")
 
-# 2. Adiciona o executável com todos os arquivos fonte do projeto (Sensores ToF, I2C, SPI/IMU)
+# 2. Adiciona o executável listando explicitamente os arquivos do VL53L1X
 add_executable(Trekking 
     src/Trekking.cpp
     lib/I2C.cpp
     lib/VL53L0X.cpp
-    lib/sensor_IMU.cpp
-    lib/sensor_TOF0.cpp
+    lib/sensor_imu.cpp
+    lib/sensor_tof.cpp
     lib/sensor_cor.cpp
+    lib/VL53L1X_api.c
+    lib/VL53L1X_platform.c
+    lib/VL53L1X_calibration.c
     ${ICM_DRIVER_SOURCES}
 )
 
@@ -61,7 +64,7 @@ pico_generate_pio_header(Trekking ${CMAKE_CURRENT_LIST_DIR}/blink.pio)
 pico_enable_stdio_uart(Trekking 0)
 pico_enable_stdio_usb(Trekking 1)
 
-# Add all user requested libraries (I2C e SPI ativados)
+# Add all user requested libraries (I2C, SPI e Timer ativados)
 target_link_libraries(Trekking
     pico_stdlib
     hardware_spi
