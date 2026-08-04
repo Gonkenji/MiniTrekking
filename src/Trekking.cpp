@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
-#include "hardware/timer.h" // Necessário para acessar as funções de timer de hardware[cite: 2]
+#include "hardware/timer.h" // Necessário para acessar as funções de timer de hardware
 #include "sensor_TOF.h"
 #include "sensor_cor.h"
 #include "sensor_imu.h"
@@ -34,7 +34,7 @@ int main() {
     printf("Sensor IMU OK!\n");
 
     tof_init();
-    printf("Sensores ToF OK!\n");
+    printf("Sensor ToF VL53L1X OK!\n");
 
     // 3. Configuração do Timer de Hardware
     struct repeating_timer timer_imu;
@@ -42,7 +42,7 @@ int main() {
     add_repeating_timer_ms(-10, imu_timer_callback, NULL, &timer_imu);
 
     // VARIÁVEIS DE ESTADO
-    uint16_t dist_s1 = 1200, dist_s2 = 1200, dist_s3 = 1200;
+    uint16_t dist_vl53l1x = 1200; // Variável única para o VL53L1X
     uint16_t c = 0, r = 0, g = 0, b = 0;
 
     uint32_t last_color_read = 0;
@@ -58,33 +58,33 @@ int main() {
         uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
         // --- LEITURA ToF (Continua em background pelo hardware do sensor) ---
-        tof_update(dist_s1, dist_s2, dist_s3);
+        tof_update(dist_vl53l1x); // Atualizado para utilizar apenas o VL53L1X
 
         if (current_time - last_color_read >= 25) {
-    color_update(c, r, g, b);
-    last_color_read = current_time;
+            color_update(c, r, g, b);
+            last_color_read = current_time;
 
-    // Validação de Debounce
-    if (detectar_placa_amarela(c, r, g, b)) {
-        contador_amarelo++;
-        
-        // Exige 3 leituras consecutivas (75ms garantidos de amarelo)
-        if (contador_amarelo >= 3 && !sobre_a_placa) { 
-            sobre_a_placa = true;
-            printf("--- MARCAÇÃO ENCONTRADA! ---\n");
-            // AQUI entra a sua chamada para atualizar a matriz de mapeamento
+            // Validação de Debounce
+            if (detectar_placa_amarela(c, r, g, b)) {
+                contador_amarelo++;
+                
+                // Exige 3 leituras consecutivas (75ms garantidos de amarelo)
+                if (contador_amarelo >= 3 && !sobre_a_placa) { 
+                    sobre_a_placa = true;
+                    printf("--- MARCAÇÃO ENCONTRADA! ---\n");
+                    // AQUI entra a sua chamada para atualizar a matriz de mapeamento
+                }
+            } else {
+                contador_amarelo = 0; // Zera se ver qualquer outra cor
+                sobre_a_placa = false;
+            }
         }
-    } else {
-        contador_amarelo = 0; // Zera se ver qualquer outra cor
-        sobre_a_placa = false;
-    }
-}
 
         // --- ATUALIZAÇÃO DO TERMINAL (A cada 100ms) ---
         if (current_time - last_terminal_print >= 100) {
             printf("\033[H\033[J"); 
             printf("=== DADOS DOS SENSORES ===\n");
-            printf("ToF1 : %4d mm  |  ToF2 : %4d mm |  ToF3 : %4d mm\n", dist_s1, dist_s2, dist_s3);
+            printf("ToF VL53L1X : %4d mm\n", dist_vl53l1x);
             printf("Cor  : C:%5u  R:%5u  G:%5u  B:%5u\n", c, r, g, b);
             
             // Lemos a variável global atualizada pelo timer

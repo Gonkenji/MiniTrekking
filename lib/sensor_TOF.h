@@ -2,4 +2,4 @@
 #include <cstdint>
 
 void tof_init();
-void tof_update(uint16_t &dist_s1, uint16_t &dist_s2, uint16_t &dist_s3);
+void tof_update(uint16_t &dist_vl53l1x);

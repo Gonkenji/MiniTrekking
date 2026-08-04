@@ -41,9 +41,7 @@ add_executable(Trekking
     lib/sensor_imu.cpp
     lib/sensor_tof.cpp
     lib/sensor_cor.cpp
-    lib/VL53L1X_api.c
-    lib/VL53L1X_platform.c
-    lib/VL53L1X_calibration.c
+    lib/VL53L1X.cpp
     ${ICM_DRIVER_SOURCES}
 )
 
