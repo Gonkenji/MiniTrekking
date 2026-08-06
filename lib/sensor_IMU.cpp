@@ -4,10 +4,10 @@
 #include <math.h>
 
 #define SPI_PORT spi0
-#define PIN_MISO 16
-#define PIN_CS   17
-#define PIN_SCK  18
-#define PIN_MOSI 19
+#define PIN_MISO 16 //ad0 - laranja
+#define PIN_CS   17 //ncs - amarelo 
+#define PIN_SCK  18 //scl - verde
+#define PIN_MOSI 19 //sda - azul
 
 // Constantes calculadas apenas uma vez na inicialização
 static float offset_gy = 0.0f, offset_gz = 0.0f;

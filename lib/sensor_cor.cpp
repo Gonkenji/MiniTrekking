@@ -8,8 +8,8 @@
 #define TCS_ATIME       (0x01 | TCS_COMMAND_BIT)
 #define TCS_CONTROL     (0x0F | TCS_COMMAND_BIT)
 #define TCS_CDATAL      (0x14 | TCS_COMMAND_BIT)
-#define cor_I2C_SDA_PIN 14
-#define cor_I2C_SCL_PIN 15
+#define cor_I2C_SDA_PIN 26 // roxo
+#define cor_I2C_SCL_PIN 27 // branco 
 
 static void tcs34725_write_reg(uint8_t reg, uint8_t value) {
     uint8_t buffer[2] = {reg, value};

@@ -41,7 +41,7 @@ static void configurarLongoAlcance(VL53L0X* sensor) {
     sensor->setSignalRateLimit(0.1);
     sensor->setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
     sensor->setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
-    sensor->setMeasurementTimingBudget(400000); 
+    sensor->setMeasurementTimingBudget(500000); 
 }
 
 static bool is_data_ready_L0X(VL53L0X* sensor) {
