@@ -1,0 +1,50 @@
+.program encoder
+
+.wrap_target
+inicio:
+    wait 0 pin 0      
+    jmp pin, descida_frente  
+    
+descida_tras:
+    jmp x--, espera_subida   
+    jmp espera_subida        ; COBERTURA DO BUG: Força o pulo se X era 0
+
+descida_frente:
+    mov x, ~x                
+    jmp x--, restaura1
+restaura1:
+    mov x, ~x
+    
+espera_subida:
+    wait 1 pin 0      
+    jmp pin, subida_tras     
+    
+subida_frente:
+    mov x, ~x
+    jmp x--, restaura2
+restaura2:
+    mov x, ~x
+    jmp inicio               ; Volta ao ciclo principal
+
+subida_tras:
+    jmp x--, inicio          
+    jmp inicio               ; COBERTURA DO BUG: Força o pulo se X era 0
+.wrap
+
+% c-sdk {
+static inline void encoder_program_init(PIO pio, uint sm, uint offset, uint pin_base) {
+    pio_sm_config c = encoder_program_get_default_config(offset);
+    
+    sm_config_set_in_pins(&c, pin_base);
+    sm_config_set_jmp_pin(&c, pin_base + 1);
+    
+    pio_gpio_init(pio, pin_base);
+    pio_gpio_init(pio, pin_base + 1);
+    
+    gpio_pull_up(pin_base);
+    gpio_pull_up(pin_base + 1);
+    
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
