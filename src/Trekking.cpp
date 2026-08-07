@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/timer.h" 
 #include "hardware/pio.h"
@@ -6,48 +7,57 @@
 #include "sensor_tof.h"
 #include "sensor_cor.h"
 #include "sensor_imu.h"
+#include "mapeamento.h" 
 
-// --- CONFIGURAÇÕES DOS ENCODERS ---
-const uint ENCODER_DIR_PIN_BASE = 20; // Motor Direita  (GP20 e GP21)
-const uint ENCODER_ESQ_PIN_BASE = 26; // Motor Esquerda (GP26 e GP27)
+int8_t mapa_grid[MAP_CELLS][MAP_CELLS] = {0};
+
+const uint ENCODER_DIR_PIN_BASE = 20; 
+const uint ENCODER_ESQ_PIN_BASE = 26; 
 
 static PIO pio_global;
 static uint sm_dir, sm_esq;
 
-// --- VARIÁVEIS GLOBAIS DE ESTADO (VOLATILE) ---
-// Devem ser 'volatile' pois são alteradas paralelamente pela interrupção do timer
+const float RAIO_RODA_MM = 16.0f; 
+const float REDUCAO_MOTOR = 30.0f; 
+const float PULSOS_POR_VOLTA_MOTOR = 14.0f; 
+const float PPR_TOTAL = REDUCAO_MOTOR * PULSOS_POR_VOLTA_MOTOR;
+const float MM_POR_PULSO = (2.0f * (float)M_PI * RAIO_RODA_MM) / PPR_TOTAL;
+
 volatile float yaw_global = 0.0f;
 volatile int32_t contagem_dir = 0;
 volatile int32_t contagem_esq = 0;
-volatile int32_t delta_dir = 0;
-volatile int32_t delta_esq = 0;
 
-// Função auxiliar para solicitar a contagem à PIO
+volatile float pos_x_global = 0.0f;
+volatile float pos_y_global = 0.0f;
+
 int32_t get_encoder_count(PIO pio, uint sm) {
     pio_sm_exec(pio, sm, pio_encode_in(pio_x, 32));
     pio_sm_exec(pio, sm, pio_encode_push(false, false));
     return (int32_t)pio_sm_get(pio, sm);
 }
 
-// --- TIMER DE FUSÃO SENSORIAL (ODOMETRIA + IMU) ---
-// Callback do Timer de Hardware rodando a cada 10ms cravados
+// ======================================================================
+// TIMER APENAS PARA MATEMÁTICA E PIO (Livre de travamentos de I2C)
+// ======================================================================
 bool odometria_timer_callback(struct repeating_timer *t) {
-    // 1. Atualiza o IMU
-    float temp_yaw;
-    imu_update(0.01f, temp_yaw); 
-    yaw_global = temp_yaw;
+    // Apenas lê a variável global que o loop principal atualizou com segurança
+    float yaw_radianos = yaw_global * ((float)M_PI / 180.0f);
 
-    // 2. Atualiza os Encoders
     int32_t leitura_atual_dir = get_encoder_count(pio_global, sm_dir);
-    int32_t leitura_atual_esq = -get_encoder_count(pio_global, sm_esq); // Inversão da roda esquerda
+    int32_t leitura_atual_esq = -get_encoder_count(pio_global, sm_esq);
     
-    // 3. Calcula os deltas de passos nos últimos 10ms
-    delta_dir = leitura_atual_dir - contagem_dir;
-    delta_esq = leitura_atual_esq - contagem_esq;
+    int32_t delta_dir = leitura_atual_dir - contagem_dir;
+    int32_t delta_esq = leitura_atual_esq - contagem_esq;
     
-    // 4. Salva a contagem total
     contagem_dir = leitura_atual_dir;
     contagem_esq = leitura_atual_esq;
+
+    float dist_mm_dir = (float)delta_dir * MM_POR_PULSO;
+    float dist_mm_esq = (float)delta_esq * MM_POR_PULSO;
+    float delta_centro_mm = (dist_mm_dir + dist_mm_esq) / 2.0f;
+
+    pos_x_global += delta_centro_mm * cosf(yaw_radianos);
+    pos_y_global += delta_centro_mm * sinf(yaw_radianos);
 
     return true; 
 }
@@ -55,99 +65,126 @@ bool odometria_timer_callback(struct repeating_timer *t) {
 int main() {
     stdio_init_all();
     while (!stdio_usb_connected()) { sleep_ms(100); }
-    printf("\n--- Sistema Completo Iniciado! ---\n");
+    printf("\n--- Sistema de Mapeamento Blindado Iniciado! ---\n");
 
     color_init();
-    printf("Sensor de Cor OK!\n");
-
     imu_init();
-    printf("Sensor IMU OK!\n");
-
     tof_init();
-    printf("Sensores ToF (1x L1X, 2x L0X) Inicializados!\n");
 
-    // --- INICIALIZAÇÃO DOS ENCODERS (PIO) ---
     pio_global = pio0;
     uint offset = pio_add_program(pio_global, &encoder_program);
-
     sm_dir = pio_claim_unused_sm(pio_global, true);
     sm_esq = pio_claim_unused_sm(pio_global, true);
-
     encoder_program_init(pio_global, sm_dir, offset, ENCODER_DIR_PIN_BASE);
     pio_sm_exec(pio_global, sm_dir, pio_encode_set(pio_x, 0)); 
-
     encoder_program_init(pio_global, sm_esq, offset, ENCODER_ESQ_PIN_BASE);
     pio_sm_exec(pio_global, sm_esq, pio_encode_set(pio_x, 0)); 
-    printf("Encoders PIO Inicializados!\n");
 
-    // --- CONFIGURAÇÃO DO TIMER DE HARDWARE ---
     struct repeating_timer timer_odometria;
     add_repeating_timer_ms(-10, odometria_timer_callback, NULL, &timer_odometria);
 
-    // --- VARIÁVEIS DO LOOP PRINCIPAL ---
-    uint32_t last_tof_read = 0;
-    uint16_t dist_l1x = 4000;
-    uint16_t dist_s1 = 1200, dist_s2 = 1200;
-    uint16_t c = 0, r = 0, g = 0, b = 0;
-
+    uint32_t last_sensor_read = 0;
     uint32_t last_color_read = 0;
+    uint32_t last_map_update = 0;
     uint32_t last_terminal_print = 0;
 
+    uint16_t dist_l1x = 4000, dist_s1 = 1200, dist_s2 = 1200;
+    uint16_t c = 0, r = 0, g = 0, b = 0;
+    
     uint8_t contador_amarelo = 0;
     bool sobre_a_placa = false;
-    
-    printf("\nA iniciar loop de controle principal...\n");
 
-    // --- LOOP PRINCIPAL ---
+    printf("\nRobo livre para mapeamento. O mapa sera impresso a cada 30 segundos...\n");
+
     while (true) {
         uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
-        // --- LEITURA ToF (Limitado a cada 10ms para não inundar o I2C) ---
-        if (current_time - last_tof_read >= 10) {
+        // ======================================================================
+        // 1. LEITURAS I2C SEQUENCIAIS (Garante que nunca haverá colisão no barramento)
+        // ======================================================================
+        if (current_time - last_sensor_read >= 10) {
+            // Atualiza IMU primeiro
+            float temp_yaw;
+            imu_update(0.01f, temp_yaw); 
+            yaw_global = temp_yaw;
+
+            // Atualiza ToF em seguida, com a linha I2C 100% liberada
             tof_update(dist_l1x, dist_s1, dist_s2);
-            last_tof_read = current_time;
+            
+            last_sensor_read = current_time;
         }
 
-        // --- LEITURA DO SENSOR DE COR (A cada 25ms) ---
+        // 2. SENSOR DE COR (A cada 25ms)
         if (current_time - last_color_read >= 25) {
             color_update(c, r, g, b);
             last_color_read = current_time;
-
-            // Validação de Debounce da placa amarela
-            if (detectar_placa_amarela(c, r, g, b)) {
-                contador_amarelo++;
-                
-                // Exige 3 leituras consecutivas (75ms garantidos de amarelo)
-                if (contador_amarelo >= 3 && !sobre_a_placa) { 
-                    sobre_a_placa = true;
-                    printf("\n--- MARCAÇÃO ENCONTRADA! ---\n");
-                    // Chamada para a matriz de mapeamento
-                }
-            } else {
-                contador_amarelo = 0; 
-                sobre_a_placa = false;
-            }
         }
 
-        // --- ATUALIZAÇÃO DO TERMINAL (A cada 100ms) ---
-        if (current_time - last_terminal_print >= 100) {
-            printf("\033[H\033[J"); // Limpa o terminal
-            printf("=== DADOS DE NAVEGAÇÃO ===\n");
+        // 3. PROCESSAMENTO DE MAPA (A cada 100ms)
+        if (current_time - last_map_update >= 100) {
+            float yaw_rad = yaw_global * ((float)M_PI / 180.0f);
+
+            // ToF Frontal (L1X): Ângulo 0
+            if (dist_l1x >= 80) {
+                // L1X é mais forte, confiamos nele até 1,5 metros (1500mm)
+                processar_leitura_tof(pos_x_global, pos_y_global, yaw_rad, dist_l1x, 0.0f, 1500);
+            }
             
-            // ToF
-            printf("ToF L1X (Frontal) : %4d mm\n", dist_l1x);
-            printf("ToF L0X (Esq/Dir) : %4d mm | %4d mm\n", dist_s1, dist_s2);
+            // ToF Esquerdo (S1): +30 Graus (+PI/6 Radianos)
+            if (dist_s1 >= 80) {
+                processar_leitura_tof(pos_x_global, pos_y_global, yaw_rad, dist_s1, (float)M_PI / 6.0f, 800);
+            }
             
-            // Cor
-            printf("Sensor de Cor     : C:%4u R:%4u G:%4u B:%4u\n", c, r, g, b);
+            // ToF Direito (S2): -30 Graus (-PI/6 Radianos)
+            if (dist_s2 >= 80) {
+                processar_leitura_tof(pos_x_global, pos_y_global, yaw_rad, dist_s2, -(float)M_PI / 6.0f, 800);
+            }
+
+            last_map_update = current_time;
+        }
+
+        // 4. PRINT DO MAPA COMPLETO ESTABILIZADO (A cada 30 Segundos)
+        if (current_time - last_terminal_print >= 30000) {
+            printf("\033[H\033[J"); 
             
-            // Odometria (Variáveis do Timer)
-            printf("IMU Yaw           : %6.2f graus\n", yaw_global); 
-            printf("Encoder Esquerda  : %5ld (Delta: %3ld)\n", contagem_esq, delta_esq);
-            printf("Encoder Direita   : %5ld (Delta: %3ld)\n", contagem_dir, delta_dir);
+            // Buffer de 80 caracteres + finalizador nulo
+            char linha_buffer[MAP_CELLS * 2 + 1]; 
+
+            // Varre o mapa inteiro de cima para baixo
+            for (int y = MAP_CELLS - 1; y >= 0; y--) { 
+                int pos_buffer = 0; 
+                
+                // Varre o mapa inteiro da esquerda para a direita
+                // Varre o mapa inteiro da esquerda para a direita
+                for (int x = 0; x < MAP_CELLS; x++) {  
+                    // Volta a usar coord_to_grid
+                    if (x == coord_to_grid(pos_x_global) && y == coord_to_grid(pos_y_global)) {
+                        linha_buffer[pos_buffer++] = 'R';
+                        linha_buffer[pos_buffer++] = ' ';
+                    } else if (mapa_grid[x][y] > 50) {
+                        linha_buffer[pos_buffer++] = '#';
+                        linha_buffer[pos_buffer++] = '#';
+                    } else if (mapa_grid[x][y] < -10) {
+                        linha_buffer[pos_buffer++] = '.';
+                        linha_buffer[pos_buffer++] = ' ';
+                    } else {
+                        linha_buffer[pos_buffer++] = ' ';
+                        linha_buffer[pos_buffer++] = ' ';
+                    }
+                }
+                linha_buffer[pos_buffer] = '\0'; 
+
+                printf("%s\n", linha_buffer);
+                
+                // Respiro crítico de 5ms mantido para evitar o travamento do I2C/USB
+                sleep_ms(5); 
+            }
             
-            printf("==========================\n");
+            printf("----------------------------------------\n");
+            printf("X: %8.1f mm | Y: %8.1f mm | Ang: %6.1f\n", pos_x_global, pos_y_global, yaw_global);
+            printf("Mapa rodando estavel. Aguardando proximo ciclo...\n");
             
+            stdio_flush(); 
             last_terminal_print = current_time;
         }
     }
