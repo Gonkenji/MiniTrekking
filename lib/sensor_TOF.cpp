@@ -41,7 +41,8 @@ static void configurarLongoAlcance(VL53L0X* sensor) {
     sensor->setSignalRateLimit(0.1);
     sensor->setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
     sensor->setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
-    sensor->setMeasurementTimingBudget(500000); 
+    // Reduzido para 50ms para evitar travamentos de leitura em movimento
+    sensor->setMeasurementTimingBudget(50000); 
 }
 
 static bool is_data_ready_L0X(VL53L0X* sensor) {
@@ -76,6 +77,11 @@ void tof_init() {
         VL53L1X_SetI2CAddress(dev_l1x, ENDERECO_L1X << 1); 
         dev_l1x = ENDERECO_L1X; 
         VL53L1X_SensorInit(dev_l1x);
+        
+        // Reduz a matriz de leitura de 16x16 para 4x4 (o mínimo permitido).
+        // Isso estreita o cone do laser frontal de ~27° para ~15°
+        VL53L1X_SetROI(dev_l1x, 4, 4); 
+
         VL53L1X_SetDistanceMode(dev_l1x, 2); 
         VL53L1X_SetTimingBudgetInMs(dev_l1x, 40); 
         VL53L1X_SetInterMeasurementInMs(dev_l1x, 45); 
@@ -118,10 +124,12 @@ void tof_update(uint16_t &dist_l1x, uint16_t &dist_s1, uint16_t &dist_s2) {
         VL53L1X_ClearInterrupt(dev_l1x); 
         
         if (status_range == 0 || status_range == 4 || status_range == 7) { 
-            if (leitura_distancia > 20 && leitura_distancia < 4000) { 
-                dist_l1x = leitura_distancia; 
+            if (leitura_distancia >= 4000) { 
+                dist_l1x = 4000; 
+            } else if (leitura_distancia <= 20) {
+                dist_l1x = 20; // Fixa limite inferior para não gerar erros de navegação
             } else {
-                dist_l1x = 4000;
+                dist_l1x = leitura_distancia;
             }
         } else {
             dist_l1x = 4000;
@@ -134,7 +142,9 @@ void tof_update(uint16_t &dist_l1x, uint16_t &dist_s1, uint16_t &dist_s2) {
         if (!sensor1.timeoutOccurred()) {
             if (leitura_s1 == 8191 || leitura_s1 > 1000) {
                 dist_s1 = 1200;
-            } else if (leitura_s1 > 20) {
+            } else if (leitura_s1 <= 20) {
+                dist_s1 = 20; 
+            } else {
                 dist_s1 = leitura_s1;
             }
         }
@@ -146,7 +156,9 @@ void tof_update(uint16_t &dist_l1x, uint16_t &dist_s1, uint16_t &dist_s2) {
         if (!sensor2.timeoutOccurred()) {
             if (leitura_s2 == 8191 || leitura_s2 > 1000) {
                 dist_s2 = 1200;
-            } else if (leitura_s2 > 20) {
+            } else if (leitura_s2 <= 20) {
+                dist_s2 = 20;
+            } else {
                 dist_s2 = leitura_s2;
             }
         }

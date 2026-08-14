@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <math.h>
+#include <cstring> // Resolvido o problema do memset indefinido
 #include "pico/stdlib.h"
 #include "hardware/timer.h" 
 #include "hardware/pio.h"
@@ -8,8 +9,11 @@
 #include "sensor_cor.h"
 #include "sensor_imu.h"
 #include "mapeamento.h" 
+#include "wifi.h" 
+#include "navegacao.h" // Inclusão do sistema de busca A*
 
 int8_t mapa_grid[MAP_CELLS][MAP_CELLS] = {0};
+bool rota_wifi_grid[40][40] = {false}; // Array global lido pelo WiFi para plotar caminho
 
 const uint ENCODER_DIR_PIN_BASE = 20; 
 const uint ENCODER_ESQ_PIN_BASE = 26; 
@@ -17,9 +21,9 @@ const uint ENCODER_ESQ_PIN_BASE = 26;
 static PIO pio_global;
 static uint sm_dir, sm_esq;
 
-const float RAIO_RODA_MM = 16.0f; 
-const float REDUCAO_MOTOR = 30.0f; 
-const float PULSOS_POR_VOLTA_MOTOR = 14.0f; 
+const float RAIO_RODA_MM = 18.0f;
+const float REDUCAO_MOTOR = 50.0f;
+const float PULSOS_POR_VOLTA_MOTOR = 14.0f;
 const float PPR_TOTAL = REDUCAO_MOTOR * PULSOS_POR_VOLTA_MOTOR;
 const float MM_POR_PULSO = (2.0f * (float)M_PI * RAIO_RODA_MM) / PPR_TOTAL;
 
@@ -36,11 +40,8 @@ int32_t get_encoder_count(PIO pio, uint sm) {
     return (int32_t)pio_sm_get(pio, sm);
 }
 
-// ======================================================================
-// TIMER APENAS PARA MATEMÁTICA E PIO (Livre de travamentos de I2C)
-// ======================================================================
+// TIMER DE ODOMETRIA
 bool odometria_timer_callback(struct repeating_timer *t) {
-    // Apenas lê a variável global que o loop principal atualizou com segurança
     float yaw_radianos = yaw_global * ((float)M_PI / 180.0f);
 
     int32_t leitura_atual_dir = get_encoder_count(pio_global, sm_dir);
@@ -64,13 +65,15 @@ bool odometria_timer_callback(struct repeating_timer *t) {
 
 int main() {
     stdio_init_all();
-    while (!stdio_usb_connected()) { sleep_ms(100); }
-    printf("\n--- Sistema de Mapeamento Blindado Iniciado! ---\n");
-
+    
+    // Atraso de 2 segundos para estabilização da tensão e calibração estática do IMU
+    sleep_ms(2000); 
+    
     color_init();
     imu_init();
     tof_init();
 
+    // Inicialização da PIO para os encoders
     pio_global = pio0;
     uint offset = pio_add_program(pio_global, &encoder_program);
     sm_dir = pio_claim_unused_sm(pio_global, true);
@@ -80,112 +83,96 @@ int main() {
     encoder_program_init(pio_global, sm_esq, offset, ENCODER_ESQ_PIN_BASE);
     pio_sm_exec(pio_global, sm_esq, pio_encode_set(pio_x, 0)); 
 
+    // Ativa Timer de Odometria
     struct repeating_timer timer_odometria;
     add_repeating_timer_ms(-10, odometria_timer_callback, NULL, &timer_odometria);
+
+    // Inicia a rede Wi-Fi e Servidor Web em Background
+    wifi_init_ap();
 
     uint32_t last_sensor_read = 0;
     uint32_t last_color_read = 0;
     uint32_t last_map_update = 0;
-    uint32_t last_terminal_print = 0;
 
     uint16_t dist_l1x = 4000, dist_s1 = 1200, dist_s2 = 1200;
     uint16_t c = 0, r = 0, g = 0, b = 0;
-    
-    uint8_t contador_amarelo = 0;
-    bool sobre_a_placa = false;
 
-    printf("\nRobo livre para mapeamento. O mapa sera impresso a cada 30 segundos...\n");
+    // --- VARIÁVEIS DE NAVEGAÇÃO ---
+    std::vector<std::pair<int, int>> rota_atual;
+    bool recalcular_rota = true;
+    
+    // Ponto de Interesse (POI) alvo - Exemplo
+    float poi_x = 1000.0f; 
+    float poi_y = 500.0f;
 
     while (true) {
         uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
-        // ======================================================================
-        // 1. LEITURAS I2C SEQUENCIAIS (Garante que nunca haverá colisão no barramento)
-        // ======================================================================
+        // 1. LEITURAS I2C SEQUENCIAIS
         if (current_time - last_sensor_read >= 10) {
-            // Atualiza IMU primeiro
             float temp_yaw;
             imu_update(0.01f, temp_yaw); 
             yaw_global = temp_yaw;
 
-            // Atualiza ToF em seguida, com a linha I2C 100% liberada
             tof_update(dist_l1x, dist_s1, dist_s2);
-            
             last_sensor_read = current_time;
         }
 
-        // 2. SENSOR DE COR (A cada 25ms)
+        // 2. SENSOR DE COR
         if (current_time - last_color_read >= 25) {
             color_update(c, r, g, b);
             last_color_read = current_time;
         }
 
-        // 3. PROCESSAMENTO DE MAPA (A cada 100ms)
+        // 3. PROCESSAMENTO DE MAPA E ROTA
         if (current_time - last_map_update >= 100) {
             float yaw_rad = yaw_global * ((float)M_PI / 180.0f);
 
-            // ToF Frontal (L1X): Ângulo 0
-            if (dist_l1x >= 80) {
-                // L1X é mais forte, confiamos nele até 1,5 metros (1500mm)
-                processar_leitura_tof(pos_x_global, pos_y_global, yaw_rad, dist_l1x, 0.0f, 1500);
+            float offsets_l1x[3] = {-0.131f, 0.0f, 0.131f}; // ~15° FOV
+            float offsets_l0x[3] = {-0.218f, 0.0f, 0.218f}; // ~25° FOV
+
+            if (dist_l1x > 0) {
+                for(int i = 0; i < 3; i++) {
+                    processar_leitura_tof(pos_x_global, pos_y_global, yaw_rad, dist_l1x, offsets_l1x[i], 1500);
+                }
             }
-            
-            // ToF Esquerdo (S1): +30 Graus (+PI/6 Radianos)
-            if (dist_s1 >= 80) {
-                processar_leitura_tof(pos_x_global, pos_y_global, yaw_rad, dist_s1, (float)M_PI / 6.0f, 800);
+            if (dist_s1 > 0) {
+                for(int i = 0; i < 3; i++) {
+                    processar_leitura_tof(pos_x_global, pos_y_global, yaw_rad, dist_s1, ((float)M_PI / 6.0f) + offsets_l0x[i], 1200);
+                }
             }
-            
-            // ToF Direito (S2): -30 Graus (-PI/6 Radianos)
-            if (dist_s2 >= 80) {
-                processar_leitura_tof(pos_x_global, pos_y_global, yaw_rad, dist_s2, -(float)M_PI / 6.0f, 800);
+            if (dist_s2 > 0) {
+                for(int i = 0; i < 3; i++) {
+                    processar_leitura_tof(pos_x_global, pos_y_global, yaw_rad, dist_s2, -(float)M_PI / 6.0f + offsets_l0x[i], 1200);
+                }
             }
 
+            // Checa se o A* precisa ser refeito por causa de um obstáculo novo lido agora
+            if (!rota_atual.empty() && verificar_rota_bloqueada(rota_atual)) {
+                recalcular_rota = true; 
+            }
+
+            // Atualiza os dados que serão despachados via interface Web
+            wifi_atualizar_dados(pos_x_global, pos_y_global, yaw_global, dist_l1x, dist_s1, dist_s2);
             last_map_update = current_time;
         }
 
-        // 4. PRINT DO MAPA COMPLETO ESTABILIZADO (A cada 30 Segundos)
-        if (current_time - last_terminal_print >= 30000) {
-            printf("\033[H\033[J"); 
+        // 4. PLANEJADOR A* 
+        if (recalcular_rota) {
+            int grid_start_x = coord_to_grid(pos_x_global);
+            int grid_start_y = coord_to_grid(pos_y_global);
+            int grid_goal_x = coord_to_grid(poi_x);
+            int grid_goal_y = coord_to_grid(poi_y);
             
-            // Buffer de 80 caracteres + finalizador nulo
-            char linha_buffer[MAP_CELLS * 2 + 1]; 
-
-            // Varre o mapa inteiro de cima para baixo
-            for (int y = MAP_CELLS - 1; y >= 0; y--) { 
-                int pos_buffer = 0; 
-                
-                // Varre o mapa inteiro da esquerda para a direita
-                // Varre o mapa inteiro da esquerda para a direita
-                for (int x = 0; x < MAP_CELLS; x++) {  
-                    // Volta a usar coord_to_grid
-                    if (x == coord_to_grid(pos_x_global) && y == coord_to_grid(pos_y_global)) {
-                        linha_buffer[pos_buffer++] = 'R';
-                        linha_buffer[pos_buffer++] = ' ';
-                    } else if (mapa_grid[x][y] > 50) {
-                        linha_buffer[pos_buffer++] = '#';
-                        linha_buffer[pos_buffer++] = '#';
-                    } else if (mapa_grid[x][y] < -10) {
-                        linha_buffer[pos_buffer++] = '.';
-                        linha_buffer[pos_buffer++] = ' ';
-                    } else {
-                        linha_buffer[pos_buffer++] = ' ';
-                        linha_buffer[pos_buffer++] = ' ';
-                    }
-                }
-                linha_buffer[pos_buffer] = '\0'; 
-
-                printf("%s\n", linha_buffer);
-                
-                // Respiro crítico de 5ms mantido para evitar o travamento do I2C/USB
-                sleep_ms(5); 
+            rota_atual = calcular_A_star(grid_start_x, grid_start_y, grid_goal_x, grid_goal_y);
+            
+            // Passa a rota recalculada para a visualização web
+            memset(rota_wifi_grid, 0, sizeof(rota_wifi_grid));
+            for(auto const& ponto : rota_atual) {
+                rota_wifi_grid[ponto.first][ponto.second] = true; 
             }
             
-            printf("----------------------------------------\n");
-            printf("X: %8.1f mm | Y: %8.1f mm | Ang: %6.1f\n", pos_x_global, pos_y_global, yaw_global);
-            printf("Mapa rodando estavel. Aguardando proximo ciclo...\n");
-            
-            stdio_flush(); 
-            last_terminal_print = current_time;
+            recalcular_rota = false;
         }
     }
 

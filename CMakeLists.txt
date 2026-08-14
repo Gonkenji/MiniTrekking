@@ -42,6 +42,8 @@ add_executable(Trekking
     lib/sensor_IMU.cpp
     lib/sensor_TOF.cpp
     lib/sensor_cor.cpp
+    lib/navegacao.cpp
+    lib/wifi.cpp
     ${ICM_DRIVER_SOURCES}
 )
 
@@ -69,6 +71,7 @@ target_link_libraries(Trekking
     hardware_i2c
     hardware_pio
     hardware_timer
+    pico_cyw43_arch_lwip_threadsafe_background
 )
 
 pico_add_extra_outputs(Trekking)
