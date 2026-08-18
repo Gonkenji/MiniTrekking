@@ -16,7 +16,7 @@
 // Modificação dos pesos: 
 // Confia mais na detecção (20) e apaga ruídos de forma mais gradual (-5)
 #define PESO_OCUPADO 20  
-#define PESO_LIVRE -5    
+#define PESO_LIVRE -20    
 
 extern int8_t mapa_grid[MAP_CELLS][MAP_CELLS];
 
@@ -24,6 +24,12 @@ extern int8_t mapa_grid[MAP_CELLS][MAP_CELLS];
 inline int coord_to_grid(float coord_mm) {
     int idx = (int)((coord_mm + (MAP_SIZE_MM / 2.0f)) / MAP_RESOLUTION_MM);
     return std::max(0, std::min(idx, MAP_CELLS - 1));
+}
+
+inline float grid_to_coord(int idx) {
+    // Multiplica pela resolução, subtrai metade do mapa para voltar à origem, 
+    // e soma metade da resolução para mirar no centro da célula
+    return (idx * MAP_RESOLUTION_MM) - (MAP_SIZE_MM / 2.0f) + (MAP_RESOLUTION_MM / 2.0f);
 }
 
 inline void atualizar_celula_linha(int x0, int y0, int x1, int y1, bool obstaculo_valido) {

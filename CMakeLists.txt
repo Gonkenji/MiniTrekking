@@ -70,6 +70,7 @@ target_link_libraries(Trekking
     hardware_spi
     hardware_i2c
     hardware_pio
+    hardware_pwm
     hardware_timer
     pico_cyw43_arch_lwip_threadsafe_background
 )

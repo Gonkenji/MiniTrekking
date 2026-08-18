@@ -1,6 +1,6 @@
 #include "wifi.h"
-#include "pico/cyw43_arch.h" // Adicionado o prefixo "pico/"
-#include "lwip/tcp.h"        // Alterado de "lwip.h" para "lwip/tcp.h"
+#include "pico/cyw43_arch.h"
+#include "lwip/tcp.h"
 #include "mapeamento.h"
 #include <string.h>
 #include <stdio.h>
@@ -8,6 +8,13 @@
 extern volatile float pos_x_global;
 extern volatile float pos_y_global;
 extern volatile float yaw_global;
+
+// Novas variáveis globais calculadas na malha de controle
+extern volatile float erro_dist_global;
+extern volatile float erro_ang_global;
+
+// Importação obrigatória da matriz de rota populada pelo main.cpp
+extern bool rota_wifi_grid[MAP_CELLS][MAP_CELLS];
 
 static uint16_t tof_frente_global = 0;
 static uint16_t tof_esq_global = 0;
@@ -54,15 +61,22 @@ static err_t http_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
                        "</head><body><h2>Mapeamento e Navegacao Global</h2><pre>\n");
 
         char *ptr = buffer + strlen(buffer);
+        
+        int rob_x = coord_to_grid(pos_x_global);
+        int rob_y = coord_to_grid(pos_y_global);
 
         for (int y = MAP_CELLS - 1; y >= 0; y--) {
             for (int x = 0; x < MAP_CELLS; x++) {
-                if (x == coord_to_grid(pos_x_global) && y == coord_to_grid(pos_y_global)) {
+                
+                // Valida se as coordenadas pertencem ao espaço ocupado de 2x2 do robô
+                bool is_robot = (x == rob_x || x == rob_x + 1) && (y == rob_y || y == rob_y + 1);
+
+                if (is_robot) {
                     *ptr++ = 'R'; 
                 } else if (mapa_grid[x][y] > 50) {
                     *ptr++ = '#'; 
                 } else if (rota_wifi_grid[x][y]) {
-                    *ptr++ = '+'; // Plotando o trajeto do A*
+                    *ptr++ = '+'; 
                 } else if (mapa_grid[x][y] < -10) {
                     *ptr++ = '.'; 
                 } else {
@@ -73,10 +87,13 @@ static err_t http_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
         }
         *ptr = '\0'; 
         
+        // Adição dos erros de distância e ângulo na renderização HTML
         sprintf(ptr, "</pre><p>X: %.1f mm | Y: %.1f mm | Ang: %.1f</p>"
-                     "<p>ToF Frente: %u mm | ToF Esq: %u mm | ToF Dir: %u mm</p></body></html>\n",
+                     "<p>ToF Frente: %u mm | ToF Esq: %u mm | ToF Dir: %u mm</p>"
+                     "<p>Erro Dist: %.1f mm | Erro Ang: %.2f rad</p></body></html>\n",
                 pos_x_global, pos_y_global, yaw_global,
-                tof_frente_global, tof_esq_global, tof_dir_global);
+                tof_frente_global, tof_esq_global, tof_dir_global,
+                erro_dist_global, erro_ang_global);
 
         err_t err_write = tcp_write(tpcb, buffer, strlen(buffer), 0);
         if (err_write == ERR_OK) {

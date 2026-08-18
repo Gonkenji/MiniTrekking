@@ -80,10 +80,10 @@ void tof_init() {
         
         // Reduz a matriz de leitura de 16x16 para 4x4 (o mínimo permitido).
         // Isso estreita o cone do laser frontal de ~27° para ~15°
-        VL53L1X_SetROI(dev_l1x, 4, 4); 
+        VL53L1X_SetROI(dev_l1x, 8, 8); 
 
         VL53L1X_SetDistanceMode(dev_l1x, 2); 
-        VL53L1X_SetTimingBudgetInMs(dev_l1x, 40); 
+        VL53L1X_SetTimingBudgetInMs(dev_l1x, 100); 
         VL53L1X_SetInterMeasurementInMs(dev_l1x, 45); 
         VL53L1X_GetInterruptPolarity(dev_l1x, &polaridade_l1x);
         VL53L1X_StartRanging(dev_l1x);
@@ -140,8 +140,8 @@ void tof_update(uint16_t &dist_l1x, uint16_t &dist_s1, uint16_t &dist_s2) {
     if (is_data_ready_L0X(&sensor1)) {
         uint16_t leitura_s1 = sensor1.readRangeContinuousMillimeters();
         if (!sensor1.timeoutOccurred()) {
-            if (leitura_s1 == 8191 || leitura_s1 > 1000) {
-                dist_s1 = 1200;
+            if (leitura_s1 == 8191 || leitura_s1 > 400) {
+                dist_s1 = 450;
             } else if (leitura_s1 <= 20) {
                 dist_s1 = 20; 
             } else {
@@ -154,8 +154,8 @@ void tof_update(uint16_t &dist_l1x, uint16_t &dist_s1, uint16_t &dist_s2) {
     if (is_data_ready_L0X(&sensor2)) {
         uint16_t leitura_s2 = sensor2.readRangeContinuousMillimeters();
         if (!sensor2.timeoutOccurred()) {
-            if (leitura_s2 == 8191 || leitura_s2 > 1000) {
-                dist_s2 = 1200;
+            if (leitura_s2 == 8191 || leitura_s2 > 400) {
+                dist_s2 = 450;
             } else if (leitura_s2 <= 20) {
                 dist_s2 = 20;
             } else {
