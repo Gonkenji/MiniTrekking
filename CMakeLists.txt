@@ -39,11 +39,11 @@ add_executable(Trekking
     lib/I2C.cpp
     lib/VL53L0X.cpp
     lib/VL53L1X.cpp
-    lib/sensor_IMU.cpp
     lib/sensor_TOF.cpp
     lib/sensor_cor.cpp
     lib/navegacao.cpp
     lib/wifi.cpp
+    lib/ICM20948_DMA.cpp
     ${ICM_DRIVER_SOURCES}
 )
 
@@ -72,6 +72,7 @@ target_link_libraries(Trekking
     hardware_pio
     hardware_pwm
     hardware_timer
+    hardware_dma
     pico_cyw43_arch_lwip_threadsafe_background
 )
 
