@@ -81,7 +81,9 @@ static void calibrar_sensores() {
 }
 
 void imu_init() {
+    // 1. Reduzido de 5 MHz para 1 MHz. Garante um sinal estável imune a interferências de cabos
     spi_init(SPI_PORT, 5000 * 1000); 
+    
     gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
     gpio_set_function(PIN_SCK, GPIO_FUNC_SPI);
     gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
@@ -90,6 +92,12 @@ void imu_init() {
     gpio_put(PIN_CS, 1);
     
     sleep_ms(50);
+    
+    // --- VERIFICAÇÃO DE HARDWARE (WHO AM I) ---
+    // Registrador 0x00 contém a identidade do chip (0xEA para ICM20948, 0x68 para MPU)
+    uint8_t who_am_i = 0;
+    icm_read_registers(0x00, &who_am_i, 1);
+
     icm_write_register(0x06, 0x01); // Acorda o sensor
     sleep_ms(50);
     
@@ -98,7 +106,6 @@ void imu_init() {
     icm_write_register(0x7F, 0x20);
 
     // 2. Configura GYRO_CONFIG_1 (Registrador 0x01)
-    // O valor 0x19 liga o DLPF e define a frequência de corte para ~50 Hz
     icm_write_register(0x01, 0x19); 
 
     // 3. Volta para o Banco 0 para as leituras normais de dados

@@ -87,7 +87,6 @@ void tof_init() {
         VL53L1X_SetInterMeasurementInMs(dev_l1x, 45); 
         VL53L1X_GetInterruptPolarity(dev_l1x, &polaridade_l1x);
         VL53L1X_StartRanging(dev_l1x);
-        printf("ToF VL53L1X OK! Endereco: 0x%02X\n", ENDERECO_L1X);
     }
 
     // 3. INICIA O VL53L0X - S1
@@ -98,7 +97,6 @@ void tof_init() {
         sensor1.setAddress(ENDERECO_S1);
         configurarLongoAlcance(&sensor1);
         sensor1.startContinuous();
-        printf("ToF S1 (VL53L0X) OK! Endereco: 0x%02X\n", ENDERECO_S1);
     }
 
     // 4. INICIA O VL53L0X - S2
@@ -109,7 +107,6 @@ void tof_init() {
         sensor2.setAddress(ENDERECO_S2);
         configurarLongoAlcance(&sensor2);
         sensor2.startContinuous();
-        printf("ToF S2 (VL53L0X) OK! Endereco: 0x%02X\n", ENDERECO_S2);
     }
 }
 

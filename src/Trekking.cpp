@@ -22,8 +22,8 @@ const uint ENCODER_ESQ_PIN_BASE = 26;
 
 // --- PINOS DA PONTE H ---
 const uint PWM_A_PIN = 1;  // Motor Esquerda (A)
-const uint DIR_A_PIN1 = 2;
-const uint DIR_A_PIN2 = 3;
+const uint DIR_A_PIN1 = 3;
+const uint DIR_A_PIN2 = 2;
 
 const uint PWM_B_PIN = 10; // Motor Direita (B)
 const uint DIR_B_PIN1 = 8;
@@ -37,6 +37,11 @@ const float REDUCAO_MOTOR = 10.0f;
 const float PULSOS_POR_VOLTA_MOTOR = 14.0f;
 const float PPR_TOTAL = REDUCAO_MOTOR * PULSOS_POR_VOLTA_MOTOR;
 const float MM_POR_PULSO = (2.0f * (float)M_PI * RAIO_RODA_MM) / PPR_TOTAL;
+
+// --- CONSTANTES DO CONTROLE P (Ajuste conforme os testes) ---
+const float KP_LINEAR = 0.8f;   
+const float KP_ANGULAR = 45.0f; 
+const int PWM_MAX_TESTE = 70;
 
 volatile float yaw_global = 0.0f;
 volatile int32_t contagem_dir = 0;
@@ -65,9 +70,12 @@ void motores_init() {
     uint slice_a = pwm_gpio_to_slice_num(PWM_A_PIN);
     uint slice_b = pwm_gpio_to_slice_num(PWM_B_PIN);
 
-    // Configuração básica do PWM 
+   // Configuração básica do PWM 
     pwm_config config = pwm_get_default_config();
     pwm_config_set_wrap(&config, 255); // Resolução de 8 bits (0 a 255)
+    
+    // ADICIONE ESTA LINHA PARA SALVAR A PONTE H:
+    pwm_config_set_clkdiv(&config, 100.0f); 
     
     pwm_init(slice_a, &config, true);
     pwm_init(slice_b, &config, true);
@@ -87,7 +95,7 @@ void set_motores(int pwm_esq, int pwm_dir) {
         gpio_put(DIR_A_PIN1, 0);
         gpio_put(DIR_A_PIN2, 1);
     }
-    pwm_set_gpio_level(PWM_A_PIN, abs(pwm_esq));
+    pwm_set_gpio_level(PWM_A_PIN, fabsf(pwm_esq));
 
     // Sentido Motor Direito (B)
     if (pwm_dir >= 0) {
@@ -97,7 +105,7 @@ void set_motores(int pwm_esq, int pwm_dir) {
         gpio_put(DIR_B_PIN1, 0);
         gpio_put(DIR_B_PIN2, 1);
     }
-    pwm_set_gpio_level(PWM_B_PIN, abs(pwm_dir));
+    pwm_set_gpio_level(PWM_B_PIN, fabsf(pwm_dir));
 }
 // ---------------------------
 
@@ -186,7 +194,7 @@ int main() {
     stdio_init_all();
     
     // Atraso de 5 segundos para estabilização da tensão e calibração estática do IMU
-    sleep_ms(5000); 
+    sleep_ms(15000); 
     
     color_init();
     imu_init();
@@ -222,8 +230,8 @@ int main() {
     bool recalcular_rota = true;
     
     // Ponto de Interesse (POI) alvo - Exemplo
-    float poi_x = 500.0f; 
-    float poi_y = 0.0f;
+    float poi_x = 700.0f; 
+    float poi_y = 500.0f;
 
     while (true) {
         uint32_t current_time = to_ms_since_boot(get_absolute_time());
@@ -293,40 +301,71 @@ int main() {
         }
 
         // 5. MALHA DE CONTROLE (50ms)
-        static uint32_t last_control_update = 0;
         if (current_time - last_control_update >= 50) {
             if (!rota_atual.empty()) {
                 float e_dist = 0.0f;
                 float e_ang = 0.0f;
                 float e_lateral = 0.0f; 
 
-                // A função agora retorna qual parte do caminho já foi alcançada
                 int idx_closest = calcular_erro_rota(pos_x_global, pos_y_global, yaw_global, rota_atual, e_dist, e_ang, e_lateral);
 
                 erro_dist_global = e_dist;
                 erro_ang_global = e_ang;
 
                 // --- ATUALIZAÇÃO DINÂMICA DO CAMINHO ---
-                // Se o robô avançou pela rota, apagamos os pontos que ficaram para trás
                 if (idx_closest > 0) {
                     rota_atual.erase(rota_atual.begin(), rota_atual.begin() + idx_closest);
                     
-                    // Limpa a matriz do Wi-Fi e redesenha apenas a rota restante
                     memset(rota_wifi_grid, 0, sizeof(rota_wifi_grid));
                     for(auto const& ponto : rota_atual) {
                         rota_wifi_grid[ponto.first][ponto.second] = true; 
                     }
                 }
 
-                // Segurança: Se o robô desviar mais de 150 mm (15 cm) do trajeto por algum motivo,
-                // forçamos o A* a traçar uma rota inteiramente nova no próximo ciclo.
                 if (e_lateral > 150.0f) {
                     recalcular_rota = true;
+                }
+
+                // --- INÍCIO DO CONTROLE P ---
+                // Calcula a distância até o ÚLTIMO ponto da rota (objetivo final)
+                float alvo_final_x = grid_to_coord(rota_atual.back().first);
+                float alvo_final_y = grid_to_coord(rota_atual.back().second);
+                float dist_objetivo_final = sqrtf(powf(alvo_final_x - pos_x_global, 2) + powf(alvo_final_y - pos_y_global, 2));
+
+                if (dist_objetivo_final < 60.0f) {
+                    // Chegou próximo ao objetivo final: freia o robô e limpa a rota
+                    set_motores(0, 0);
+                    rota_atual.clear();
+                } else {
+                    float v_linear = 0.0f;
+                    
+                    // Se o erro de ângulo for muito grande (> 45 graus), apenas rotaciona no próprio eixo
+                    // antes de tentar ir para frente. Evita que o robô faça curvas muito abertas.
+                    if (fabsf(e_ang) < 0.78f) { 
+                        v_linear = e_dist * KP_LINEAR;
+                    }
+                    
+                    float w_angular = e_ang * KP_ANGULAR;
+
+                    // Cinemática inversa simples (V e W para PWM das rodas direita e esquerda)
+                    int pwm_esq = (int)(v_linear - w_angular);
+                    int pwm_dir = (int)(v_linear + w_angular);
+
+                    // Saturação de Segurança (impede que passe da velocidade de teste)
+                    if (pwm_esq > PWM_MAX_TESTE) pwm_esq = PWM_MAX_TESTE;
+                    if (pwm_esq < -PWM_MAX_TESTE) pwm_esq = -PWM_MAX_TESTE;
+                    
+                    if (pwm_dir > PWM_MAX_TESTE) pwm_dir = PWM_MAX_TESTE;
+                    if (pwm_dir < -PWM_MAX_TESTE) pwm_dir = -PWM_MAX_TESTE;
+
+                    // Aplica na Ponte H
+                    set_motores(pwm_esq, pwm_dir);
                 }
 
             } else {
                 erro_dist_global = 0.0f;
                 erro_ang_global = 0.0f;
+                set_motores(0, 0); // Rota vazia, garante motores parados
             }
             
             last_control_update = current_time;
