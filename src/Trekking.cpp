@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <cstring>
-#include <stdlib.h> // Adicionado para função abs()
+#include <stdlib.h> // Para abs() e std::abs()
 #include "pico/stdlib.h"
 #include "hardware/timer.h" 
 #include "hardware/pio.h"
@@ -9,10 +9,51 @@
 #include "encoder.pio.h" 
 #include "sensor_tof.h"
 #include "sensor_cor.h"
-#include "sensor_imu.h"
+#include "ICM20948_DMA.hpp"
 #include "mapeamento.h" 
 #include "wifi.h" 
 #include "navegacao.h" 
+
+// --- CLASSE DO FILTRO IMU ---
+class SimpleIMUFilter {
+private:
+    IMUData last_valid;
+    float alpha;            
+    float max_gyro_delta;   
+    bool first_run;
+
+public:
+    SimpleIMUFilter(float alpha_val = 0.3f, float max_delta = 60.0f) 
+        : alpha(alpha_val), max_gyro_delta(max_delta), first_run(true) {
+        last_valid = {0, 0, 0, 0, 0, 0};
+    }
+
+    IMUData apply(IMUData current) {
+        if (first_run) {
+            last_valid = current;
+            first_run = false;
+            return current;
+        }
+
+        if (std::abs(current.gyroX - last_valid.gyroX) > max_gyro_delta ||
+            std::abs(current.gyroY - last_valid.gyroY) > max_gyro_delta ||
+            std::abs(current.gyroZ - last_valid.gyroZ) > max_gyro_delta) {
+            return last_valid;
+        }
+
+        IMUData filtered;
+        filtered.accelX = last_valid.accelX + alpha * (current.accelX - last_valid.accelX);
+        filtered.accelY = last_valid.accelY + alpha * (current.accelY - last_valid.accelY);
+        filtered.accelZ = last_valid.accelZ + alpha * (current.accelZ - last_valid.accelZ);
+        
+        filtered.gyroX = last_valid.gyroX + alpha * (current.gyroX - last_valid.gyroX);
+        filtered.gyroY = last_valid.gyroY + alpha * (current.gyroY - last_valid.gyroY);
+        filtered.gyroZ = last_valid.gyroZ + alpha * (current.gyroZ - last_valid.gyroZ);
+
+        last_valid = filtered;
+        return filtered;
+    }
+};
 
 int8_t mapa_grid[MAP_CELLS][MAP_CELLS] = {0};
 bool rota_wifi_grid[MAP_CELLS][MAP_CELLS] = {false}; 
@@ -38,7 +79,7 @@ const float PULSOS_POR_VOLTA_MOTOR = 14.0f;
 const float PPR_TOTAL = REDUCAO_MOTOR * PULSOS_POR_VOLTA_MOTOR;
 const float MM_POR_PULSO = (2.0f * (float)M_PI * RAIO_RODA_MM) / PPR_TOTAL;
 
-// --- CONSTANTES DO CONTROLE P (Ajuste conforme os testes) ---
+// --- CONSTANTES DO CONTROLE P ---
 const float KP_LINEAR = 0.8f;   
 const float KP_ANGULAR = 45.0f; 
 const int PWM_MAX_TESTE = 70;
@@ -57,37 +98,29 @@ uint32_t last_control_update = 0;
 
 // --- FUNÇÕES DOS MOTORES ---
 void motores_init() {
-    // Configura os pinos de direção como saída
     gpio_init(DIR_A_PIN1); gpio_set_dir(DIR_A_PIN1, GPIO_OUT);
     gpio_init(DIR_A_PIN2); gpio_set_dir(DIR_A_PIN2, GPIO_OUT);
     gpio_init(DIR_B_PIN1); gpio_set_dir(DIR_B_PIN1, GPIO_OUT);
     gpio_init(DIR_B_PIN2); gpio_set_dir(DIR_B_PIN2, GPIO_OUT);
 
-    // Configura os pinos de PWM
     gpio_set_function(PWM_A_PIN, GPIO_FUNC_PWM);
     gpio_set_function(PWM_B_PIN, GPIO_FUNC_PWM);
 
     uint slice_a = pwm_gpio_to_slice_num(PWM_A_PIN);
     uint slice_b = pwm_gpio_to_slice_num(PWM_B_PIN);
 
-   // Configuração básica do PWM 
     pwm_config config = pwm_get_default_config();
-    pwm_config_set_wrap(&config, 255); // Resolução de 8 bits (0 a 255)
-    
-    // ADICIONE ESTA LINHA PARA SALVAR A PONTE H:
+    pwm_config_set_wrap(&config, 255); 
     pwm_config_set_clkdiv(&config, 100.0f); 
     
     pwm_init(slice_a, &config, true);
     pwm_init(slice_b, &config, true);
     
-    // Garante que os motores comecem parados
     pwm_set_gpio_level(PWM_A_PIN, 0);
     pwm_set_gpio_level(PWM_B_PIN, 0);
 }
 
-// Função utilitária para quando for implementar o controle (ainda não utilizada no loop)
 void set_motores(int pwm_esq, int pwm_dir) {
-    // Sentido Motor Esquerdo (A)
     if (pwm_esq >= 0) {
         gpio_put(DIR_A_PIN1, 1);
         gpio_put(DIR_A_PIN2, 0);
@@ -97,7 +130,6 @@ void set_motores(int pwm_esq, int pwm_dir) {
     }
     pwm_set_gpio_level(PWM_A_PIN, fabsf(pwm_esq));
 
-    // Sentido Motor Direito (B)
     if (pwm_dir >= 0) {
         gpio_put(DIR_B_PIN1, 1);
         gpio_put(DIR_B_PIN2, 0);
@@ -107,7 +139,6 @@ void set_motores(int pwm_esq, int pwm_dir) {
     }
     pwm_set_gpio_level(PWM_B_PIN, fabsf(pwm_dir));
 }
-// ---------------------------
 
 int32_t get_encoder_count(PIO pio, uint sm) {
     pio_sm_exec(pio, sm, pio_encode_in(pio_x, 32));
@@ -138,7 +169,6 @@ bool odometria_timer_callback(struct repeating_timer *t) {
     return true; 
 }
 
-// Atualize a função antes do main() para esta versão:
 int calcular_erro_rota(float x_atual, float y_atual, float yaw_atual_graus, const std::vector<std::pair<int, int>>& rota, float &erro_d, float &erro_a, float &erro_lateral) {
     if (rota.empty()) {
         erro_d = 0.0f; erro_a = 0.0f; erro_lateral = 0.0f;
@@ -148,7 +178,6 @@ int calcular_erro_rota(float x_atual, float y_atual, float yaw_atual_graus, cons
     float min_dist_sq = 99999999.0f;
     int idx_mais_proximo = 0;
 
-    // 1. Varre o vetor para achar a célula da rota mais próxima
     for (size_t i = 0; i < rota.size(); i++) {
         float px = grid_to_coord(rota[i].first);
         float py = grid_to_coord(rota[i].second);
@@ -163,16 +192,12 @@ int calcular_erro_rota(float x_atual, float y_atual, float yaw_atual_graus, cons
         }
     }
 
-    // Salva a distância real da roda para a linha do trajeto
     erro_lateral = sqrtf(min_dist_sq);
-
-    // 2. Define o alvo de controle (Lookahead de 3 células à frente)
     int lookahead = std::min((int)rota.size() - 1, idx_mais_proximo + 3);
     
     float alvo_x = grid_to_coord(rota[lookahead].first);
     float alvo_y = grid_to_coord(rota[lookahead].second);
 
-    // 3. Calcula os erros para controle dos motores
     float dx = alvo_x - x_atual;
     float dy = alvo_y - y_atual;
     
@@ -182,24 +207,55 @@ int calcular_erro_rota(float x_atual, float y_atual, float yaw_atual_graus, cons
     float angulo_alvo = atan2f(dy, dx);
     erro_a = angulo_alvo - yaw_rad;
     
-    // Normalização de ângulo
     while (erro_a > (float)M_PI) erro_a -= 2.0f * (float)M_PI;
     while (erro_a < -(float)M_PI) erro_a += 2.0f * (float)M_PI;
 
-    // Retorna o índice para que a malha de controle saiba o que apagar
     return idx_mais_proximo;
 }
 
 int main() {
     stdio_init_all();
     
-    // Atraso de 5 segundos para estabilização da tensão e calibração estática do IMU
-    sleep_ms(15000); 
+    // Atraso de 2 segundos para estabilização da tensão e calibração
+    sleep_ms(2000); 
     
     color_init();
-    imu_init();
     tof_init();
-    motores_init(); // Inicializa os pinos e slices de PWM da Ponte H
+    motores_init(); 
+    
+    // Inicialização do novo IMU com DMA
+    ICM20948 imu(spi0, 16, 17, 18, 19);
+    imu.init();
+    SimpleIMUFilter imuFilter(0.3f, 60.0f);
+    IMUData imu_buffer[10];
+    
+    // ---------------------------------------------------------
+    // NOVA ROTINA DE CALIBRAÇÃO DO GIROSCÓPIO (BIAS)
+    // ---------------------------------------------------------
+    printf("Calibrando IMU (MANTENHA O ROBO PARADO)...\n");
+    float gyroZ_bias = 0.0f;
+    float soma_z = 0.0f;
+    int amostras_calib = 0;
+    
+    // Aproveita 2 segundos do seu tempo de setup para coletar dados
+    uint32_t start_calib = to_ms_since_boot(get_absolute_time());
+    while(to_ms_since_boot(get_absolute_time()) - start_calib < 2000) {
+        imu.startFIFODMARead(10);
+        int lidos = imu.checkAndGetFIFO(imu_buffer);
+        if (lidos > 0) {
+            soma_z += imu_buffer[0].gyroZ;
+            amostras_calib++;
+        }
+        sleep_ms(5); // Pequeno delay para preencher o FIFO
+    }
+    
+    if (amostras_calib > 0) {
+        gyroZ_bias = soma_z / amostras_calib;
+        printf("Calibracao concluida. Bias Z: %.3f dps (Amostras: %d)\n", gyroZ_bias, amostras_calib);
+    }
+    // ---------------------------------------------------------
+
+    uint32_t last_imu_time = to_ms_since_boot(get_absolute_time());
 
     // Inicialização da PIO para os encoders
     pio_global = pio0;
@@ -215,7 +271,6 @@ int main() {
     struct repeating_timer timer_odometria;
     add_repeating_timer_ms(-10, odometria_timer_callback, NULL, &timer_odometria);
 
-    // Inicia a rede Wi-Fi e Servidor Web em Background
     wifi_init_ap();
 
     uint32_t last_sensor_read = 0;
@@ -225,34 +280,53 @@ int main() {
     uint16_t dist_l1x = 2500, dist_s1 = 600, dist_s2 = 600;
     uint16_t c = 0, r = 0, g = 0, b = 0;
 
-    // --- VARIÁVEIS DE NAVEGAÇÃO ---
     std::vector<std::pair<int, int>> rota_atual;
     bool recalcular_rota = true;
     
-    // Ponto de Interesse (POI) alvo - Exemplo
     float poi_x = 700.0f; 
     float poi_y = 500.0f;
 
     while (true) {
         uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
-        // 1. LEITURAS I2C SEQUENCIAIS
-        if (current_time - last_sensor_read >= 10) {
-            float temp_yaw;
-            imu_update(0.01f, temp_yaw); 
-            yaw_global = temp_yaw;
+        // 1. LEITURA CONTÍNUA E ASSÍNCRONA DO IMU (DMA)
+        imu.startFIFODMARead(10);
+        int lidos_imu = imu.checkAndGetFIFO(imu_buffer);
+        
+        if (lidos_imu > 0) {
+            IMUData filtered_data = imuFilter.apply(imu_buffer[0]);
+            
+            // Subtrai o erro intrínseco lido na inicialização
+            float true_gyroZ = filtered_data.gyroZ - gyroZ_bias;
+            
+            // Integração do giroscópio (eixo Z) para calcular o Yaw em graus
+            float dt_sec = (current_time - last_imu_time) / 1000.0f;
+            
+            // Zona morta simples (agora atuando sobre o valor corrigido)
+            if (std::abs(true_gyroZ) > 0.5f) {
+                yaw_global += (true_gyroZ * dt_sec);
+            }
+            
+            // Mantém o Yaw normalizado entre -180 e 180
+            if (yaw_global > 180.0f) yaw_global -= 360.0f;
+            if (yaw_global < -180.0f) yaw_global += 360.0f;
 
+            last_imu_time = current_time;
+        }
+
+        // 2. LEITURAS I2C SEQUENCIAIS (Apenas ToF agora, IMU está em background)
+        if (current_time - last_sensor_read >= 10) {
             tof_update(dist_l1x, dist_s1, dist_s2);
             last_sensor_read = current_time;
         }
 
-        // 2. SENSOR DE COR
+        // 3. SENSOR DE COR
         if (current_time - last_color_read >= 25) {
             color_update(c, r, g, b);
             last_color_read = current_time;
         }
 
-        // 3. PROCESSAMENTO DE MAPA E ROTA
+        // 4. PROCESSAMENTO DE MAPA E ROTA
         if (current_time - last_map_update >= 100) {
             float yaw_rad = yaw_global * ((float)M_PI / 180.0f);
 
@@ -283,7 +357,7 @@ int main() {
             last_map_update = current_time;
         }
 
-        // 4. PLANEJADOR A* 
+        // 5. PLANEJADOR A* 
         if (recalcular_rota) {
             int grid_start_x = coord_to_grid(pos_x_global);
             int grid_start_y = coord_to_grid(pos_y_global);
@@ -300,7 +374,7 @@ int main() {
             recalcular_rota = false;
         }
 
-        // 5. MALHA DE CONTROLE (50ms)
+        // 6. MALHA DE CONTROLE (50ms)
         if (current_time - last_control_update >= 50) {
             if (!rota_atual.empty()) {
                 float e_dist = 0.0f;
@@ -312,7 +386,6 @@ int main() {
                 erro_dist_global = e_dist;
                 erro_ang_global = e_ang;
 
-                // --- ATUALIZAÇÃO DINÂMICA DO CAMINHO ---
                 if (idx_closest > 0) {
                     rota_atual.erase(rota_atual.begin(), rota_atual.begin() + idx_closest);
                     
@@ -326,46 +399,38 @@ int main() {
                     recalcular_rota = true;
                 }
 
-                // --- INÍCIO DO CONTROLE P ---
-                // Calcula a distância até o ÚLTIMO ponto da rota (objetivo final)
                 float alvo_final_x = grid_to_coord(rota_atual.back().first);
                 float alvo_final_y = grid_to_coord(rota_atual.back().second);
                 float dist_objetivo_final = sqrtf(powf(alvo_final_x - pos_x_global, 2) + powf(alvo_final_y - pos_y_global, 2));
 
                 if (dist_objetivo_final < 60.0f) {
-                    // Chegou próximo ao objetivo final: freia o robô e limpa a rota
                     set_motores(0, 0);
                     rota_atual.clear();
                 } else {
                     float v_linear = 0.0f;
                     
-                    // Se o erro de ângulo for muito grande (> 45 graus), apenas rotaciona no próprio eixo
-                    // antes de tentar ir para frente. Evita que o robô faça curvas muito abertas.
                     if (fabsf(e_ang) < 0.78f) { 
                         v_linear = e_dist * KP_LINEAR;
                     }
                     
                     float w_angular = e_ang * KP_ANGULAR;
 
-                    // Cinemática inversa simples (V e W para PWM das rodas direita e esquerda)
                     int pwm_esq = (int)(v_linear - w_angular);
                     int pwm_dir = (int)(v_linear + w_angular);
 
-                    // Saturação de Segurança (impede que passe da velocidade de teste)
                     if (pwm_esq > PWM_MAX_TESTE) pwm_esq = PWM_MAX_TESTE;
                     if (pwm_esq < -PWM_MAX_TESTE) pwm_esq = -PWM_MAX_TESTE;
                     
                     if (pwm_dir > PWM_MAX_TESTE) pwm_dir = PWM_MAX_TESTE;
                     if (pwm_dir < -PWM_MAX_TESTE) pwm_dir = -PWM_MAX_TESTE;
 
-                    // Aplica na Ponte H
                     set_motores(pwm_esq, pwm_dir);
                 }
 
             } else {
                 erro_dist_global = 0.0f;
                 erro_ang_global = 0.0f;
-                set_motores(0, 0); // Rota vazia, garante motores parados
+                set_motores(0, 0);
             }
             
             last_control_update = current_time;
