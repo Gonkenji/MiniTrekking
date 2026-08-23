@@ -9,6 +9,7 @@
 #include "encoder.pio.h" 
 #include "sensor_tof.h"
 #include "sensor_cor.h"
+// #include "sensor_imu.h" <-- Removido, usando a nova biblioteca DMA
 #include "ICM20948_DMA.hpp"
 #include "mapeamento.h" 
 #include "wifi.h" 
@@ -216,7 +217,7 @@ int calcular_erro_rota(float x_atual, float y_atual, float yaw_atual_graus, cons
 int main() {
     stdio_init_all();
     
-    // Atraso de 2 segundos para estabilização da tensão e calibração
+    // Atraso de  segundos para estabilização da tensão e calibração
     sleep_ms(2000); 
     
     color_init();
@@ -226,38 +227,12 @@ int main() {
     // Inicialização do novo IMU com DMA
     ICM20948 imu(spi0, 16, 17, 18, 19);
     imu.init();
+    imu.calibrate();
     SimpleIMUFilter imuFilter(0.3f, 60.0f);
     IMUData imu_buffer[10];
-    
-    // ---------------------------------------------------------
-    // NOVA ROTINA DE CALIBRAÇÃO DO GIROSCÓPIO (BIAS)
-    // ---------------------------------------------------------
-    printf("Calibrando IMU (MANTENHA O ROBO PARADO)...\n");
-    float gyroZ_bias = 0.0f;
-    float soma_z = 0.0f;
-    int amostras_calib = 0;
-    
-    // Aproveita 2 segundos do seu tempo de setup para coletar dados
-    uint32_t start_calib = to_ms_since_boot(get_absolute_time());
-    while(to_ms_since_boot(get_absolute_time()) - start_calib < 2000) {
-        imu.startFIFODMARead(10);
-        int lidos = imu.checkAndGetFIFO(imu_buffer);
-        if (lidos > 0) {
-            soma_z += imu_buffer[0].gyroZ;
-            amostras_calib++;
-        }
-        sleep_ms(5); // Pequeno delay para preencher o FIFO
-    }
-    
-    if (amostras_calib > 0) {
-        gyroZ_bias = soma_z / amostras_calib;
-        printf("Calibracao concluida. Bias Z: %.3f dps (Amostras: %d)\n", gyroZ_bias, amostras_calib);
-    }
-    // ---------------------------------------------------------
-
     uint32_t last_imu_time = to_ms_since_boot(get_absolute_time());
 
-    // Inicialização da PIO para os encoders
+    // Inicialização da PIO para os encoders    
     pio_global = pio0;
     uint offset = pio_add_program(pio_global, &encoder_program);
     sm_dir = pio_claim_unused_sm(pio_global, true);
@@ -296,16 +271,8 @@ int main() {
         if (lidos_imu > 0) {
             IMUData filtered_data = imuFilter.apply(imu_buffer[0]);
             
-            // Subtrai o erro intrínseco lido na inicialização
-            float true_gyroZ = filtered_data.gyroZ - gyroZ_bias;
-            
             // Integração do giroscópio (eixo Z) para calcular o Yaw em graus
             float dt_sec = (current_time - last_imu_time) / 1000.0f;
-            
-            // Zona morta simples (agora atuando sobre o valor corrigido)
-            if (std::abs(true_gyroZ) > 0.5f) {
-                yaw_global += (true_gyroZ * dt_sec);
-            }
             
             // Mantém o Yaw normalizado entre -180 e 180
             if (yaw_global > 180.0f) yaw_global -= 360.0f;

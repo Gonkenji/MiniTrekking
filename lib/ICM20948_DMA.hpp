@@ -24,6 +24,8 @@ public:
     // Retorna a quantidade de amostras processadas (0 se ainda ocupado)
     int checkAndGetFIFO(IMUData* buffer);
 
+    void calibrate();
+    
 private:
     spi_inst_t* spi;
     uint cs_pin;
@@ -43,8 +45,15 @@ private:
     void writeRegister(uint8_t reg, uint8_t data);
     uint8_t readRegister(uint8_t reg);
     uint16_t getFIFOCount(); // Leitura em burst do contador
+
     void setupDMA();
     
+    void readRegisters(uint8_t reg, uint8_t* buf, uint16_t len);
+
+    // Variáveis herdadas do modelo SPI para correção de erro
+    float offset_gx{0.0f}, offset_gy{0.0f}, offset_gz{0.0f};
+    float const_sin_r{0.0f}, const_cos_r{1.0f}, const_cos_p{1.0f};
+
     // Multiplicadores (substituem as divisões, CPU processa mais rápido)
     const float accel_mult = 1.0f / 16384.0f;
     const float gyro_mult  = 1.0f / 131.0f;
