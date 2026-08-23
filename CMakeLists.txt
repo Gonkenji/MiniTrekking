@@ -35,7 +35,8 @@ file(GLOB ICM_DRIVER_SOURCES "lib/icm20948/*.c")
 
 # 2. Adiciona o executável com todos os arquivos fonte do projeto (Sensores ToF, I2C, SPI/IMU)
 add_executable(Trekking 
-    src/Trekking.cpp
+    src/Trekking_Core0.cpp
+    src/Trekking_Core1.cpp
     lib/I2C.cpp
     lib/VL53L0X.cpp
     lib/VL53L1X.cpp
@@ -73,6 +74,7 @@ target_link_libraries(Trekking
     hardware_pwm
     hardware_timer
     hardware_dma
+    pico_multicore
     pico_cyw43_arch_lwip_threadsafe_background
 )
 

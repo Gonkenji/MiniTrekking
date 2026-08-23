@@ -25,6 +25,7 @@ public:
     int checkAndGetFIFO(IMUData* buffer);
 
     void calibrate();
+    void resetFIFO();
     
 private:
     spi_inst_t* spi;

@@ -80,27 +80,33 @@ void ICM20948::setupDMA() {
 
 void ICM20948::init() {
     setupDMA();
-
     selectBank(0);
     writeRegister(PWR_MGMT_1, 0x81);
     sleep_ms(50);
     writeRegister(PWR_MGMT_1, 0x01);
     sleep_ms(50);
 
+    selectBank(2);             
+    writeRegister(0x01, 0x19); // Retorna ao Filtro original (1125 Hz)
+    sleep_ms(10);
+    selectBank(0);             
+
     writeRegister(USER_CTRL, 0x40); 
     writeRegister(FIFO_EN_2, 0x1E); 
-
-    // Garante que o banco 0 fique selecionado permanentemente 
-    // para não precisarmos chamar selectBank() a cada ciclo do loop
-    selectBank(0);
 }
 
 void ICM20948::startFIFODMARead(int max_samples) {
-    if (dma_active) return; // Evita sobreposição se já estiver rodando
+    if (dma_active) return; 
 
     uint16_t bytes_in_fifo = getFIFOCount();
-    int available_samples = bytes_in_fifo / 12;
     
+    // Se o FIFO estiver perto de transbordar (limite de 512), limpa para evitar desalinhamento
+    if (bytes_in_fifo >= 504) {
+        writeRegister(0x03, 0x44); 
+        return;
+    }
+
+    int available_samples = bytes_in_fifo / 12;
     if (available_samples == 0) return;
     
     if (max_samples > MAX_FIFO_SAMPLES) max_samples = MAX_FIFO_SAMPLES;
@@ -173,6 +179,16 @@ void ICM20948::calibrate() {
     const_sin_r = sin(roll_rad);
     const_cos_r = cos(roll_rad);
     const_cos_p = cos(pitch_rad);
+}
+
+void ICM20948::resetFIFO() {
+    selectBank(0);
+    writeRegister(0x03, 0x00); // 1. Desabilita o FIFO
+    sleep_ms(5);
+    writeRegister(0x03, 0x04); // 2. Reseta o FIFO
+    sleep_ms(5);
+    writeRegister(0x03, 0x40); // 3. Habilita novamente
+    sleep_ms(5);
 }
 
 int ICM20948::checkAndGetFIFO(IMUData* buffer) {
