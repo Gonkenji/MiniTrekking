@@ -3,14 +3,14 @@
 #include <cstring>
 #include <stdlib.h>
 #include "pico/stdlib.h"
-#include "pico/multicore.h" // Adicionado para o Core 1
+#include "pico/multicore.h"
 #include "hardware/timer.h" 
 #include "hardware/pio.h"
 #include "hardware/pwm.h"
 #include "encoder.pio.h" 
 #include "sensor_tof.h"
 #include "sensor_cor.h"
-#include "ICM20948_DMA.hpp"
+#include "sensor_imu.h" 
 #include "navegacao.h" 
 #include "shared_data.h"
 
@@ -41,47 +41,6 @@ void init_shared_sync() {
     mutex_init(&mutex_sensores);
     critical_section_init(&cs_estado);
 }
-
-// --- CLASSE DO FILTRO IMU ---
-class SimpleIMUFilter {
-private:
-    IMUData last_valid;
-    float alpha;            
-    float max_gyro_delta;   
-    bool first_run;
-
-public:
-    SimpleIMUFilter(float alpha_val = 0.3f, float max_delta = 60.0f) 
-        : alpha(alpha_val), max_gyro_delta(max_delta), first_run(true) {
-        last_valid = {0, 0, 0, 0, 0, 0};
-    }
-
-    IMUData apply(IMUData current) {
-        if (first_run) {
-            last_valid = current;
-            first_run = false;
-            return current;
-        }
-
-        if (std::abs(current.gyroX - last_valid.gyroX) > max_gyro_delta ||
-            std::abs(current.gyroY - last_valid.gyroY) > max_gyro_delta ||
-            std::abs(current.gyroZ - last_valid.gyroZ) > max_gyro_delta) {
-            return last_valid;
-        }
-
-        IMUData filtered;
-        filtered.accelX = last_valid.accelX + alpha * (current.accelX - last_valid.accelX);
-        filtered.accelY = last_valid.accelY + alpha * (current.accelY - last_valid.accelY);
-        filtered.accelZ = last_valid.accelZ + alpha * (current.accelZ - last_valid.accelZ);
-        
-        filtered.gyroX = last_valid.gyroX + alpha * (current.gyroX - last_valid.gyroX);
-        filtered.gyroY = last_valid.gyroY + alpha * (current.gyroY - last_valid.gyroY);
-        filtered.gyroZ = last_valid.gyroZ + alpha * (current.gyroZ - last_valid.gyroZ);
-
-        last_valid = filtered;
-        return filtered;
-    }
-};
 
 const uint ENCODER_DIR_PIN_BASE = 20; 
 const uint ENCODER_ESQ_PIN_BASE = 26; 
@@ -198,7 +157,6 @@ int calcular_erro_rota_otimizado(float x_atual, float y_atual, float yaw_atual_g
     float min_dist_sq = 99999999.0f;
     size_t melhor_idx = idx_atual;
 
-    // Busca apenas nas próximas 5 células para economizar CPU
     size_t limite_busca = std::min(rota.size(), idx_atual + 5);
 
     for (size_t i = idx_atual; i < limite_busca; i++) {
@@ -218,7 +176,6 @@ int calcular_erro_rota_otimizado(float x_atual, float y_atual, float yaw_atual_g
     idx_atual = melhor_idx;
     erro_lateral = sqrtf(min_dist_sq);
 
-    // Lookahead mantém a projeção 3 células à frente para suavizar a curva
     size_t lookahead = std::min(rota.size() - 1, idx_atual + 3);
     
     float alvo_x = grid_to_coord(rota[lookahead].first);
@@ -241,8 +198,6 @@ int calcular_erro_rota_otimizado(float x_atual, float y_atual, float yaw_atual_g
 
 int main() {
     stdio_init_all();
-    
-    // Atraso de  segundos para estabilização da tensão e calibração
     sleep_ms(2000); 
     
     init_shared_sync();
@@ -250,14 +205,9 @@ int main() {
     tof_init();
     motores_init(); 
     
-    // Inicialização do novo IMU com DMA
-    ICM20948 imu(spi0, 16, 17, 18, 19);
-    imu.init();
-    imu.calibrate();
-    SimpleIMUFilter imuFilter(0.3f, 60.0f);
-    IMUData imu_buffer[10];
-    uint32_t last_imu_time = to_us_since_boot(get_absolute_time());
-
+    // Inicialização do IMU via SPI
+    imu_init();
+    
     // Inicialização da PIO para os encoders    
     pio_global = pio0;
     uint offset = pio_add_program(pio_global, &encoder_program);
@@ -268,11 +218,9 @@ int main() {
     encoder_program_init(pio_global, sm_esq, offset, ENCODER_ESQ_PIN_BASE);
     pio_sm_exec(pio_global, sm_esq, pio_encode_set(pio_x, 0)); 
 
-    // Ativa Timer de Odometria
     struct repeating_timer timer_odometria;
     add_repeating_timer_ms(-10, odometria_timer_callback, NULL, &timer_odometria);
 
-    // INICIA O CORE 1
     multicore_launch_core1(core1_main);
 
     uint32_t last_sensor_read = 0;
@@ -281,33 +229,29 @@ int main() {
     uint16_t d_l1x = 2500, d_s1 = 600, d_s2 = 600;
     uint16_t c = 0, r = 0, g = 0, b = 0;
 
-    imu.resetFIFO();
+    uint32_t last_imu_read_ms = 0;
     uint64_t last_imu_time_us = to_us_since_boot(get_absolute_time());
 
     while (true) {
-        uint32_t current_time = to_ms_since_boot(get_absolute_time());
+    uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
-        // 1. LEITURA CONTÍNUA E ASSÍNCRONA DO IMU (DMA)
-        imu.startFIFODMARead(10);
-        int lidos_imu = imu.checkAndGetFIFO(imu_buffer);
+    // 1. LEITURA DO IMU LIMITADA A 500Hz (2ms)
+    if (current_time - last_imu_read_ms >= 2) {
+        uint64_t current_time_imu_us = to_us_since_boot(get_absolute_time());
+        float dt_total_sec = (current_time_imu_us - last_imu_time_us) / 1000000.0f;
+        last_imu_time_us = current_time_imu_us;
 
-        if (lidos_imu > 0) {
-            uint64_t current_time_imu_us = to_us_since_boot(get_absolute_time());
-            float dt_total_sec = (current_time_imu_us - last_imu_time_us) / 1000000.0f;
-            float dt_per_sample = dt_total_sec / lidos_imu; 
+        float yaw_lido = 0.0f;
+        imu_update(dt_total_sec, yaw_lido); 
 
-            critical_section_enter_blocking(&cs_estado);
-            for (int i = 0; i < lidos_imu; i++) {
-                // O sinal agora já vem limpo do hardware, sem precisar de zona morta
-                yaw_global += (imu_buffer[i].gyroZ * dt_per_sample);
-            }
-            
-            while (yaw_global > 180.0f) yaw_global -= 360.0f;
-            while (yaw_global < -180.0f) yaw_global += 360.0f;
-            critical_section_exit(&cs_estado);
+        critical_section_enter_blocking(&cs_estado);
+        yaw_global = yaw_lido;
+        while (yaw_global > 180.0f) yaw_global -= 360.0f;
+        while (yaw_global < -180.0f) yaw_global += 360.0f;
+        critical_section_exit(&cs_estado);
 
-            last_imu_time_us = current_time_imu_us;
-        }
+        last_imu_read_ms = current_time;
+    }
 
         // 2. LEITURAS I2C SEQUENCIAIS (ToF)
         if (current_time - last_sensor_read >= 10) {
@@ -342,7 +286,6 @@ int main() {
             if (!rota_atual_global.empty() && idx_rota_global < rota_atual_global.size()) {
                 float e_dist = 0.0f, e_ang = 0.0f, e_lateral = 0.0f; 
 
-                // Copia o índice volátil para manipulação local
                 size_t idx_local = idx_rota_global;
                 calcular_erro_rota_otimizado(px, py, yaw, rota_atual_global, idx_local, e_dist, e_ang, e_lateral);
                 idx_rota_global = idx_local; 
@@ -360,7 +303,6 @@ int main() {
 
                 if (dist_objetivo_final < 60.0f) {
                     set_motores(0, 0);
-                    // Apenas avançamos o índice para o fim em vez de dar .clear() no vetor
                     idx_rota_global = rota_atual_global.size(); 
                 } else {
                     float v_linear = (fabsf(e_ang) < 0.78f) ? e_dist * KP_LINEAR : 0.0f;

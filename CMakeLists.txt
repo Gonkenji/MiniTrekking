@@ -44,7 +44,7 @@ add_executable(Trekking
     lib/sensor_cor.cpp
     lib/navegacao.cpp
     lib/wifi.cpp
-    lib/ICM20948_DMA.cpp
+    lib/sensor_imu.cpp
     ${ICM_DRIVER_SOURCES}
 )
 
