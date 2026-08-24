@@ -2,6 +2,7 @@
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
 #include <math.h>
+#include <stdio.h>
 
 #define SPI_PORT spi0
 #define PIN_MISO 16 //ad0 - laranja
@@ -81,8 +82,8 @@ static void calibrar_sensores() {
 }
 
 void imu_init() {
-    // 1. Reduzido de 5 MHz para 1 MHz. Garante um sinal estável imune a interferências de cabos
-    spi_init(SPI_PORT, 5000 * 1000); 
+    // 1. Corrigido para realmente operar em 1 MHz (estava em 5 MHz)
+    spi_init(SPI_PORT, 1000 * 1000); 
     
     gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
     gpio_set_function(PIN_SCK, GPIO_FUNC_SPI);
@@ -94,23 +95,34 @@ void imu_init() {
     sleep_ms(50);
     
     // --- VERIFICAÇÃO DE HARDWARE (WHO AM I) ---
-    // Registrador 0x00 contém a identidade do chip (0xEA para ICM20948, 0x68 para MPU)
     uint8_t who_am_i = 0;
     icm_read_registers(0x00, &who_am_i, 1);
+    
+    // Verifica no terminal se o sensor respondeu
+    printf("SPI IMU: Lendo WHO_AM_I... Valor recebido: 0x%02X\n", who_am_i);
+    
+    // O valor correto para o ICM20948 é 0xEA
+    if (who_am_i != 0xEA) {
+        printf("ERRO CRÍTICO: Sensor não detectado. Valor recebido não é 0xEA!\n");
+        // Trava o código aqui para você arrumar o hardware
+        while(true) {
+            printf("Hardware travado. Verifique a pinagem MISO, MOSI, SCK, CS e alimentação.\n");
+            sleep_ms(1000);
+        }
+    }
 
     icm_write_register(0x06, 0x01); // Acorda o sensor
     sleep_ms(50);
     
+    // --- DESATIVAÇÃO FORÇADA DO I2C INTERNO ---
+    // Registrador 0x03 (USER_CTRL) -> bit 4 = I2C_IF_DIS (0x10)
+    icm_write_register(0x03, 0x10);
+    sleep_ms(10);
+    
     // --- CONFIGURAÇÃO DO DLPF (FILTRO PASSA-BAIXA) ---
-    // 1. Muda para o Banco 2 (Registrador REG_BANK_SEL = 0x7F, Valor = 0x20)
-    icm_write_register(0x7F, 0x20);
-
-    // 2. Configura GYRO_CONFIG_1 (Registrador 0x01)
-    icm_write_register(0x01, 0x19); 
-
-    // 3. Volta para o Banco 0 para as leituras normais de dados
-    icm_write_register(0x7F, 0x00);
-    // -------------------------------------------------
+    icm_write_register(0x7F, 0x20); // Muda para o Banco 2
+    icm_write_register(0x01, 0x19); // Configura GYRO_CONFIG_1
+    icm_write_register(0x7F, 0x00); // Volta para o Banco 0
 
     calibrar_sensores();
 }

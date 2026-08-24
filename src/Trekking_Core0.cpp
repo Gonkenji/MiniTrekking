@@ -20,8 +20,8 @@ mutex_t mutex_sensores;
 critical_section_t cs_estado;
 
 volatile float pos_x_global = 0.0f;
-volatile float pos_y_global = 0.0f;
-volatile float yaw_global = 0.0f;
+volatile float pos_y_global = -800.0f;
+volatile float yaw_global = 180.0f;
 
 volatile uint16_t dist_l1x_global = 2500;
 volatile uint16_t dist_s1_global = 600;
@@ -63,15 +63,28 @@ const float PULSOS_POR_VOLTA_MOTOR = 14.0f;
 const float PPR_TOTAL = REDUCAO_MOTOR * PULSOS_POR_VOLTA_MOTOR;
 const float MM_POR_PULSO = (2.0f * (float)M_PI * RAIO_RODA_MM) / PPR_TOTAL;
 
-// --- CONSTANTES DO CONTROLE P ---
+// --- CONSTANTES DO CONTROLE PD ---
 const float KP_LINEAR = 0.8f;   
+const float KD_LINEAR = 1.5f;   // Termo Derivativo Linear (ajuste na bancada)
 const float KP_ANGULAR = 45.0f; 
+const float KD_ANGULAR = 15.0f; // Termo Derivativo Angular (ajuste na bancada)
+
 const int PWM_MAX_TESTE = 70;
+const int PWM_MIN_MOVER = 30;   // Velocidade mínima estipulada para mover o robô
+
+// Variáveis para guardar o erro do ciclo anterior (memória do Derivativo)
+float ultimo_erro_dist = 0.0f;
+float ultimo_erro_ang = 0.0f;
 
 volatile int32_t contagem_dir = 0;
 volatile int32_t contagem_esq = 0;
 
 uint32_t last_control_update = 0;
+
+// --- VARIÁVEIS DE ESTADO DA CORRIDA ---
+// 0: Varredura Esquerda, 1: Varredura Direita, 2: Alinhando ao Alvo, 3: Navegação PID
+uint8_t estado_corrida = 0; 
+const int PWM_VARREDURA = 35; // Velocidade lenta, um pouco acima da sua zona morta
 
 // --- FUNÇÕES DOS MOTORES ---
 void motores_init() {
@@ -245,7 +258,8 @@ int main() {
         imu_update(dt_total_sec, yaw_lido); 
 
         critical_section_enter_blocking(&cs_estado);
-        yaw_global = yaw_lido;
+        yaw_global = yaw_lido + 90.0f;
+
         while (yaw_global > 180.0f) yaw_global -= 360.0f;
         while (yaw_global < -180.0f) yaw_global += 360.0f;
         critical_section_exit(&cs_estado);
@@ -275,55 +289,139 @@ int main() {
         // 4. MALHA DE CONTROLE PID (10ms - 100Hz)
         if (current_time - last_control_update >= 10) {
             
-            critical_section_enter_blocking(&cs_estado);
-            float px = pos_x_global;
-            float py = pos_y_global;
-            float yaw = yaw_global;
-            critical_section_exit(&cs_estado);
+            // ==========================================
+            // FASE 1: MAPEAMENTO INICIAL (VARREDURA)
+            // ==========================================
+            if (estado_corrida < 3) {
+                critical_section_enter_blocking(&cs_estado);
+                float yaw_atual_rad = yaw_global * ((float)M_PI / 180.0f);
+                float px = pos_x_global;
+                float py = pos_y_global;
+                critical_section_exit(&cs_estado);
 
-            mutex_enter_blocking(&mutex_rota);
-            
-            if (!rota_atual_global.empty() && idx_rota_global < rota_atual_global.size()) {
-                float e_dist = 0.0f, e_ang = 0.0f, e_lateral = 0.0f; 
+                float angulo_alvo_rad = 0.0f;
 
-                size_t idx_local = idx_rota_global;
-                calcular_erro_rota_otimizado(px, py, yaw, rota_atual_global, idx_local, e_dist, e_ang, e_lateral);
-                idx_rota_global = idx_local; 
-
-                erro_dist_global = e_dist;
-                erro_ang_global = e_ang;
-
-                if (e_lateral > 150.0f) {
-                    flag_recalcular_rota = true; 
+                // Define para onde o robô deve olhar dependendo do estado
+                if (estado_corrida == 0) {
+                    // Olha 45 graus para a esquerda (90 + 45 = 135)
+                    angulo_alvo_rad = 135.0f * ((float)M_PI / 180.0f); 
+                } else if (estado_corrida == 1) {
+                    // Olha 45 graus para a direita (90 - 45 = 45)
+                    angulo_alvo_rad = 45.0f * ((float)M_PI / 180.0f);
+                } else if (estado_corrida == 2) {
+                    // Aponta para o primeiro ponto da rota traçada pelo A*
+                    mutex_enter_blocking(&mutex_rota);
+                    if (!rota_atual_global.empty()) {
+                        float alvo_x = grid_to_coord(rota_atual_global[0].first);
+                        float alvo_y = grid_to_coord(rota_atual_global[0].second);
+                        angulo_alvo_rad = atan2f(alvo_y - py, alvo_x - px);
+                    } else {
+                        angulo_alvo_rad = 90.0f * ((float)M_PI / 180.0f);
+                    }
+                    mutex_exit(&mutex_rota);
                 }
 
-                float alvo_final_x = grid_to_coord(rota_atual_global.back().first);
-                float alvo_final_y = grid_to_coord(rota_atual_global.back().second);
-                float dist_objetivo_final = sqrtf(powf(alvo_final_x - px, 2) + powf(alvo_final_y - py, 2));
+                // Cálculo do erro angular
+                float erro_a_varredura = angulo_alvo_rad - yaw_atual_rad;
+                while (erro_a_varredura > (float)M_PI) erro_a_varredura -= 2.0f * (float)M_PI;
+                while (erro_a_varredura < -(float)M_PI) erro_a_varredura += 2.0f * (float)M_PI;
 
-                if (dist_objetivo_final < 60.0f) {
+                // Gira no próprio eixo de forma lenta (PWM_VARREDURA) para dar tempo do ToF ler
+                int pwm_esq = (erro_a_varredura > 0) ? -PWM_VARREDURA : PWM_VARREDURA;
+                int pwm_dir = (erro_a_varredura > 0) ? PWM_VARREDURA : -PWM_VARREDURA;
+
+                // Se o erro for menor que ~3 graus (0.05 rad), atingiu o alvo da varredura
+                if (fabsf(erro_a_varredura) < 0.05f) {
                     set_motores(0, 0);
-                    idx_rota_global = rota_atual_global.size(); 
+                    estado_corrida++; // Avança para o próximo estágio
                 } else {
-                    float v_linear = (fabsf(e_ang) < 0.78f) ? e_dist * KP_LINEAR : 0.0f;
-                    float w_angular = e_ang * KP_ANGULAR;
-
-                    int pwm_esq = (int)(v_linear - w_angular);
-                    int pwm_dir = (int)(v_linear + w_angular);
-
-                    if (pwm_esq > PWM_MAX_TESTE) pwm_esq = PWM_MAX_TESTE;
-                    if (pwm_esq < -PWM_MAX_TESTE) pwm_esq = -PWM_MAX_TESTE;
-                    if (pwm_dir > PWM_MAX_TESTE) pwm_dir = PWM_MAX_TESTE;
-                    if (pwm_dir < -PWM_MAX_TESTE) pwm_dir = -PWM_MAX_TESTE;
-
                     set_motores(pwm_esq, pwm_dir);
                 }
-            } else {
-                erro_dist_global = 0.0f;
-                erro_ang_global = 0.0f;
-                set_motores(0, 0);
+
+            } 
+            // ==========================================
+            // FASE 2: NAVEGAÇÃO PID (Após a varredura)
+            // ==========================================
+            else {
+                if (!rota_atual_global.empty() && idx_rota_global < rota_atual_global.size() && !flag_recalcular_rota) {
+                    critical_section_enter_blocking(&cs_estado);
+                    float px = pos_x_global;
+                    float py = pos_y_global;
+                    float yaw = yaw_global;
+                    critical_section_exit(&cs_estado);
+
+                    mutex_enter_blocking(&mutex_rota);
+                    if (!rota_atual_global.empty() && idx_rota_global < rota_atual_global.size()) {
+                        float e_dist = 0.0f, e_ang = 0.0f, e_lateral = 0.0f; 
+
+                        size_t idx_local = idx_rota_global;
+                        calcular_erro_rota_otimizado(px, py, yaw, rota_atual_global, idx_local, e_dist, e_ang, e_lateral);
+                        idx_rota_global = idx_local; 
+
+                        erro_dist_global = e_dist;
+                        erro_ang_global = e_ang;
+
+                        if (e_lateral > 150.0f) {
+                            flag_recalcular_rota = true; 
+                        }
+
+                        float alvo_final_x = grid_to_coord(rota_atual_global.back().first);
+                        float alvo_final_y = grid_to_coord(rota_atual_global.back().second);
+                        float dist_objetivo_final = sqrtf(powf(alvo_final_x - px, 2) + powf(alvo_final_y - py, 2));
+
+                        if (dist_objetivo_final < 60.0f) {
+                            set_motores(0, 0);
+                            idx_rota_global = rota_atual_global.size(); 
+                        } else {
+                            // 1. Cálculo das Derivadas (Variação do erro no tempo)
+                            // Como o loop roda cravado em 10ms (100Hz), o 'dt' é constante.
+                            // Deixamos a divisão por dt embutida no valor da própria constante KD.
+                            float d_dist = e_dist - ultimo_erro_dist;
+                            float d_ang = e_ang - ultimo_erro_ang;
+                            
+                            // Atualiza a memória para o próximo ciclo
+                            ultimo_erro_dist = e_dist;
+                            ultimo_erro_ang = e_ang;
+
+                            // 2. Cálculo PD
+                            // A parcela linear continua condicionada ao alinhamento angular
+                            float v_linear = 0.0f;
+                            if (fabsf(e_ang) < 0.78f) {
+                                v_linear = (e_dist * KP_LINEAR) + (d_dist * KD_LINEAR);
+                            }
+                            
+                            float w_angular = (e_ang * KP_ANGULAR) + (d_ang * KD_ANGULAR);
+
+                            int pwm_esq = (int)(v_linear - w_angular);
+                            int pwm_dir = (int)(v_linear + w_angular);
+                            
+                            // 3. Compensação de Zona Morta com Histerese (Tolerância Zero)
+                            // Se o PWM exigido for muito baixo (< 5), consideramos que chegou no limite 
+                            // de precisão mecânica e cortamos a força para evitar "chattering".
+                            if (abs(pwm_esq) < 5) pwm_esq = 0;
+                            else if (pwm_esq > 0 && pwm_esq < PWM_MIN_MOVER) pwm_esq = PWM_MIN_MOVER;
+                            else if (pwm_esq < 0 && pwm_esq > -PWM_MIN_MOVER) pwm_esq = -PWM_MIN_MOVER;
+
+                            if (abs(pwm_dir) < 5) pwm_dir = 0;
+                            else if (pwm_dir > 0 && pwm_dir < PWM_MIN_MOVER) pwm_dir = PWM_MIN_MOVER;
+                            else if (pwm_dir < 0 && pwm_dir > -PWM_MIN_MOVER) pwm_dir = -PWM_MIN_MOVER;
+
+                            // 4. Limitação Máxima de Segurança (Mantida em 70)
+                            if (pwm_esq > PWM_MAX_TESTE) pwm_esq = PWM_MAX_TESTE;
+                            if (pwm_esq < -PWM_MAX_TESTE) pwm_esq = -PWM_MAX_TESTE;
+                            if (pwm_dir > PWM_MAX_TESTE) pwm_dir = PWM_MAX_TESTE;
+                            if (pwm_dir < -PWM_MAX_TESTE) pwm_dir = -PWM_MAX_TESTE;
+
+                            set_motores(pwm_esq, pwm_dir);
+                        }
+                    }
+                    mutex_exit(&mutex_rota);
+                } else {
+                    erro_dist_global = 0.0f;
+                    erro_ang_global = 0.0f;
+                    set_motores(0, 0);
+                }
             }
-            mutex_exit(&mutex_rota);
             
             last_control_update = current_time;
         }

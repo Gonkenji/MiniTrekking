@@ -10,8 +10,8 @@ void core1_main() {
     wifi_init_ap();
 
     uint32_t last_map_update = 0;
-    float poi_x = 700.0f; 
-    float poi_y = -500.0f;
+    float poi_x = 100.0f; 
+    float poi_y = 800.0f;
 
     while (true) {
         uint32_t current_time = to_ms_since_boot(get_absolute_time());
@@ -82,6 +82,7 @@ void core1_main() {
             // Bloqueia para sobreescrever a rota oficial
             mutex_enter_blocking(&mutex_rota);
             rota_atual_global = nova_rota;
+            
             
             memset(rota_wifi_grid, 0, sizeof(rota_wifi_grid));
             for(auto const& ponto : rota_atual_global) {

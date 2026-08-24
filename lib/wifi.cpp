@@ -68,8 +68,8 @@ static err_t http_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
         for (int y = MAP_CELLS - 1; y >= 0; y--) {
             for (int x = 0; x < MAP_CELLS; x++) {
                 
-                // Valida se as coordenadas pertencem ao espaço ocupado de 2x2 do robô
-                bool is_robot = (x == rob_x || x == rob_x + 1) && (y == rob_y || y == rob_y + 1);
+                // Valida se a coordenada é exatamente a posição do robô (1x1)
+                bool is_robot = (x == rob_x && y == rob_y);
 
                 if (is_robot) {
                     *ptr++ = 'R'; 
