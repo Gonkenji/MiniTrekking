@@ -45,6 +45,7 @@ add_executable(Trekking
     lib/navegacao.cpp
     lib/wifi.cpp
     lib/sensor_imu.cpp
+    lib/pmw.cpp
     ${ICM_DRIVER_SOURCES}
 )
 
